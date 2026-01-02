@@ -11,8 +11,8 @@ images (e.g., wireplane waveforms) and other modalities in the near future.
 **pimm** adapts 3D point cloud methods for event reconstruction in LArTPC detectors. This repository provides:
 
 - **Self-supervised pre-training**: discriminative pre-training ([Sonata](https://arxiv.org/abs/2503.16429))
-- **Panoptic segmentation** (PointGroup, Panda Detector)models for particle instance and semantic segmentation
-- **Semantic segmentation** for motif-level (track, shower, ...) per-pixel segmentation.
+- **Panoptic segmentation** (PointGroup, Panda Detector) models for particle and interaction instance/semantic segmentation
+- **Semantic segmentation** models for per-pixel segmentation.
 
 In sum, **pimm** integrates the following works:  
 **Backbone**: 
