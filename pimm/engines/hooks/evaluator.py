@@ -401,10 +401,19 @@ class SemSegEvaluator(HookBase):
             "Best {}: {:.4f}".format("mIoU", self.trainer.best_metric_value)
         )
 
-
 @HOOKS.register_module()
 class PretrainEvaluator(HookBase):
-    def __init__(self, label="segment", write_cls_iou=True, every_n_steps=1, max_train_events=250, max_test_events=250, class_weights=None, class_names=None, prefix=""):
+    def __init__(
+        self,
+        label="segment",
+        write_cls_iou=True,
+        every_n_steps=1,
+        max_train_events=250,
+        max_test_events=250,
+        class_names=None,
+        prefix="",
+        train_config=None,
+    ):
         self.write_cls_iou = write_cls_iou
         self.every_n_steps = every_n_steps
         self.max_train_events = max_train_events
@@ -412,18 +421,7 @@ class PretrainEvaluator(HookBase):
         self.prefix = prefix
         # support both single label and multiple labels
         self.labels = [label] if isinstance(label, str) else list(label)
-        
-        # support per-label class_weights
-        # class_weights can be:
-        # - None: no weights for any label
-        # - list/array: same weights for all labels
-        # - dict: {label_name: weights} for per-label weights
-        if class_weights is None or not isinstance(class_weights, dict):
-            # single set of weights or None - apply to all labels
-            self.class_weights_dict = {label_name: class_weights for label_name in self.labels}
-        else:
-            # dict of per-label weights
-            self.class_weights_dict = class_weights
+        self.train_config = train_config
         
         # support per-label class_names
         # class_names can be:
@@ -476,23 +474,23 @@ class PretrainEvaluator(HookBase):
                 point = parent
         
         # Get features and offset information
-        features = point.feat[point.inverse]  # [N, C]
-        offsets = [0] + input_dict['offset'].cpu().tolist()  # Batch offsets
-        
+        features = point.feat  # [N, C]
+        offsets = [0] + input_dict["offset"].cpu().tolist()  # Batch offsets
+
         # Extract all label types
         all_labels = {}
         for label_name in self.labels:
-            all_labels[label_name] = getattr(point, label_name).squeeze(-1)[point.inverse]  # [N]
-        
+            all_labels[label_name] = getattr(point, label_name).squeeze(-1)  # [N]
+
         # Process features by batch using offsets
         batch_features = []
         batch_labels_dict = {label_name: [] for label_name in self.labels}
-        
+
         # Use offsets to separate points from different events in the batch
         for i in range(len(offsets) - 1):
             start_idx = offsets[i]
             end_idx = offsets[i + 1]
-            
+
             # Extract features for this event
             event_features = features[start_idx:end_idx]
             batch_features.append(event_features.cpu())
@@ -500,140 +498,123 @@ class PretrainEvaluator(HookBase):
             for label_name in self.labels:
                 event_labels = all_labels[label_name][start_idx:end_idx]
                 batch_labels_dict[label_name].append(event_labels.cpu())
-            
+
         return batch_features, batch_labels_dict
 
     def eval(self):
-        # All ranks participate in evaluation
-        self.trainer.model.eval()
-        
-        world_size = comm.get_world_size()
+        # only run on rank 0
         rank = comm.get_rank()
-        
-        if rank == 0:
-            self.trainer.logger.info(">>>>>>>>>>>>>>>> Start Evaluation >>>>>>>>>>>>>>>>")
+        if rank != 0:
+            # wait for rank 0 to finish evaluation
+            if comm.get_world_size() > 1:
+                comm.synchronize()
+            return
 
-        # Calculate per-rank event targets to ensure total events match max_train_events + max_test_events
-        # Each rank collects its share of events
-        per_rank_train_events = (self.max_train_events + world_size - 1) // world_size  # Ceiling division
-        per_rank_test_events = (self.max_test_events + world_size - 1) // world_size  # Ceiling division
-        per_rank_total_events = per_rank_train_events + per_rank_test_events
+        self.trainer.model.eval()
+        self.trainer.logger.info(">>>>>>>>>>>>>>>> Start Evaluation >>>>>>>>>>>>>>>>")
 
-        # Collect features and labels from events (features shared, labels per label type)
+        # collect features and labels from events
         train_features = []
         train_labels_dict = {label_name: [] for label_name in self.labels}
         test_features = []
         test_labels_dict = {label_name: [] for label_name in self.labels}
-        
+
         event_count = 0
-        
-        # All ranks iterate their shard of the distributed loader
+        total_events_needed = self.max_train_events + self.max_test_events
+
         for i, input_dict in enumerate(self.trainer.val_loader):
-            batch_features, batch_labels_dict = self._process_batch_with_offsets(input_dict)
-            
-            # Process each event in the batch
+            self.trainer.logger.info(f"Processing batch {i}")
+            batch_features, batch_labels_dict = self._process_batch_with_offsets(
+                input_dict
+            )
+
             for event_idx, event_features in enumerate(batch_features):
-                if event_count < per_rank_train_events:
+                if event_count < self.max_train_events:
                     train_features.append(event_features)
                     for label_name in self.labels:
-                        train_labels_dict[label_name].append(batch_labels_dict[label_name][event_idx])
-                elif event_count < per_rank_total_events:
+                        train_labels_dict[label_name].append(
+                            batch_labels_dict[label_name][event_idx]
+                        )
+                elif event_count < total_events_needed:
                     test_features.append(event_features)
                     for label_name in self.labels:
-                        test_labels_dict[label_name].append(batch_labels_dict[label_name][event_idx])
+                        test_labels_dict[label_name].append(
+                            batch_labels_dict[label_name][event_idx]
+                        )
                 else:
                     break
-                    
+
                 event_count += 1
-                
-            # Stop if we have enough events for this rank
-            if event_count >= per_rank_total_events:
+
+            if event_count >= total_events_needed:
                 break
 
-        # Gather all events from all ranks to rank 0
-        if world_size > 1:
-            # Gather train features
-            train_features_gathered = comm.gather(train_features, dst=0)
-            # Gather test features
-            test_features_gathered = comm.gather(test_features, dst=0)
-            # Gather train labels for each label type
-            train_labels_gathered_dict = {}
-            test_labels_gathered_dict = {}
-            for label_name in self.labels:
-                train_labels_gathered_dict[label_name] = comm.gather(train_labels_dict[label_name], dst=0)
-                test_labels_gathered_dict[label_name] = comm.gather(test_labels_dict[label_name], dst=0)
-            
-            if rank == 0:
-                # Flatten gathered lists and truncate to exact target counts
-                train_features = [f for features_list in train_features_gathered for f in features_list][:self.max_train_events]
-                test_features = [f for features_list in test_features_gathered for f in features_list][:self.max_test_events]
-                
-                for label_name in self.labels:
-                    train_labels_dict[label_name] = [l for labels_list in train_labels_gathered_dict[label_name] for l in labels_list][:self.max_train_events]
-                    test_labels_dict[label_name] = [l for labels_list in test_labels_gathered_dict[label_name] for l in labels_list][:self.max_test_events]
-            else:
-                # Non-rank-0 processes set model back to train and wait
-                self.trainer.model.train()
-                comm.synchronize()
-                return
-        else:
-            # Single process case - truncate to exact counts
-            train_features = train_features[:self.max_train_events]
-            test_features = test_features[:self.max_test_events]
-            for label_name in self.labels:
-                train_labels_dict[label_name] = train_labels_dict[label_name][:self.max_train_events]
-                test_labels_dict[label_name] = test_labels_dict[label_name][:self.max_test_events]
-        
-        # Only rank 0 reaches here (or single-process case)
-        # Concatenate features (shared across all labels)
-        if not train_features or not test_features:
-            self.trainer.logger.error("Not enough events for train/test split")
-            self.trainer.model.train()
-            if world_size > 1:
-                comm.synchronize()
-            return
-            
+        # truncate to exact counts
+        train_features = train_features[: self.max_train_events]
+        test_features = test_features[: self.max_test_events]
+        for label_name in self.labels:
+            train_labels_dict[label_name] = train_labels_dict[label_name][
+                : self.max_train_events
+            ]
+            test_labels_dict[label_name] = test_labels_dict[label_name][
+                : self.max_test_events
+            ]
+
         X_train = torch.cat(train_features, dim=0)
         X_test = torch.cat(test_features, dim=0)
 
-        self.trainer.logger.info(f"Train events: {len(train_features)}, Test events: {len(test_features)}")
-        self.trainer.logger.info(f"Train features: {X_train.shape}, Test features: {X_test.shape}")
-        
-        # Now evaluate for each label type
+        self.trainer.logger.info(
+            f"Train events: {len(train_features)}, Test events: {len(test_features)}"
+        )
+        self.trainer.logger.info(
+            f"Train features: {X_train.shape}, Test features: {X_test.shape}"
+        )
+
         for label_name in self.labels:
-            self.trainer.logger.info(f"\n{'='*60}\nEvaluating label: {label_name}\n{'='*60}")
-            
-            # Concatenate labels for this label type
+            self.trainer.logger.info(
+                f"\n{'=' * 60}\nEvaluating label: {label_name}\n{'=' * 60}"
+            )
+
             y_train = torch.cat(train_labels_dict[label_name], dim=0)
             y_test = torch.cat(test_labels_dict[label_name], dim=0)
-            
-            # Determine prefix for logging
+
             if len(self.labels) > 1:
-                # multiple labels: use label_name as prefix
-                eval_prefix = label_name if not self.prefix else f"{self.prefix}_{label_name}"
+                eval_prefix = (
+                    label_name if not self.prefix else f"{self.prefix}_{label_name}"
+                )
             else:
-                # single label: use provided prefix or default
                 eval_prefix = self.prefix if self.prefix else label_name
-            
-            # Get class_weights for this label
-            label_class_weights = self.class_weights_dict.get(label_name, None)
-            
-            # Get class_names for this label (None means use default from cfg)
+
             label_class_names = self.class_names_dict.get(label_name, None)
-            
-            # Run evaluation for this label
-            self._evaluate_single_label(X_train, y_train, X_test, y_test, eval_prefix, label_class_weights, label_class_names)
-        
-        # Set model back to train mode
+
+            self._evaluate_single_label(
+                X_train,
+                y_train,
+                X_test,
+                y_test,
+                eval_prefix,
+                label_class_names,
+            )
+
         self.trainer.model.train()
-        
-        # Synchronize before returning (ensure all ranks finish together)
-        if world_size > 1:
+
+        # signal other ranks that evaluation is complete
+        if comm.get_world_size() > 1:
             comm.synchronize()
-    
-    def _evaluate_single_label(self, X_train, y_train, X_test, y_test, eval_prefix, label_class_weights, label_class_names):
+
+    def _evaluate_single_label(
+        self,
+        X_train,
+        y_train,
+        X_test,
+        y_test,
+        eval_prefix,
+        label_class_names,
+    ):
         """Train and evaluate a grid of linear classifiers for a single label type."""
-        from pimm.engines.hooks.eval.linear import LinearProbingTrainer, LinearProbingConfig
+        from pimm.engines.hooks.eval.linear import (
+            LinearProbingTrainer,
+        )
 
         # Use provided class names or fall back to default
         if label_class_names is None:
@@ -641,7 +622,6 @@ class PretrainEvaluator(HookBase):
 
         num_classes = int(y_train.max().item()) + 1
 
-        cfg = LinearProbingConfig()
         trainer = LinearProbingTrainer(
             X_train=X_train,
             y_train=y_train,
@@ -649,7 +629,7 @@ class PretrainEvaluator(HookBase):
             y_test=y_test,
             num_classes=num_classes,
             logger=self.trainer.logger,
-            config=cfg,
+            config=self.train_config,
         )
         metrics = trainer.train_and_evaluate()
 

@@ -24,7 +24,7 @@ import torch.nn.functional as F
 from torch.nn.modules.loss import _WeightedLoss
 from typing import Optional
 from torch import Tensor
-
+from pimm.models.losses import build_criteria
 
 _DEFAULT_LR_LIST: Tuple[float, ...] = (1e-5, 2e-5, 5e-5, 1e-4, 2e-4, 5e-4, 1e-3, 2e-3, 5e-3, 1e-2, 2e-2, 5e-2, 0.1)
 
@@ -66,7 +66,7 @@ class LinearProbingConfig:
     batch_size: int = 32768
     weight_decay: float = 0.01
     device: Optional[torch.device] = None
-
+    criteria: dict = field(default_factory=lambda: dict(type="CrossEntropyLoss"))
 
 class LinearProbingTrainer:
     """
@@ -85,7 +85,7 @@ class LinearProbingTrainer:
         y_test: torch.Tensor,
         num_classes: int,
         logger,
-        config: Optional[LinearProbingConfig] = None,
+        config: Optional[dict] = None,
     ) -> None:
         assert X_train.ndim == 2, "X_train must be 2D [N, D]"
         assert X_test.ndim == 2, "X_test must be 2D [M, D]"
@@ -97,7 +97,7 @@ class LinearProbingTrainer:
         self.y_test = y_test
         self.num_classes = int(num_classes)
         self.logger = logger
-        self.cfg = config or LinearProbingConfig()
+        self.cfg = LinearProbingConfig(**config) if config is not None else LinearProbingConfig()  # type: ignore
 
         self.device = (
             self.cfg.device
@@ -120,13 +120,12 @@ class LinearProbingTrainer:
             param_groups.append({"params": clf.parameters(), "lr": base_lr})
 
         self.model = AllClassifiers(classifiers).to(self.device)
-        # We keep training single-process here; DDP is not strictly necessary
-        # because feature extraction was already distributed before gathering.
 
+        # We keep training single-process here
         self.optimizer = torch.optim.AdamW(
             param_groups, weight_decay=self.cfg.weight_decay
         )
-        self.criterion = nn.CrossEntropyLoss()
+        self.criterion = build_criteria(self.cfg.criteria)
 
         self.train_dataset = TensorDataset(self.X_train, self.y_train)
         self.train_loader = DataLoader(

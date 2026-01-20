@@ -245,7 +245,7 @@ data = dict(
         test_mode=False,    
         energy_threshold=0.13,
         min_points=1024,
-        max_len=-1,
+        max_len=1000,
         remove_low_energy_scatters=False,
         loop=1,
     ),
@@ -299,8 +299,10 @@ hooks = [
     dict(
         type="PretrainEvaluator",
         write_cls_iou=True,
-        class_weights=class_weights,
         every_n_steps=1000,
+        train_config=dict(
+            criteria=[dict(type="CrossEntropyLoss", weight=class_weights)],
+        )
         # max_samples_per_class=15000,
     ),
     dict(
