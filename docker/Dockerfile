@@ -26,13 +26,13 @@ RUN export DEBIAN_FRONTEND=noninteractive \
 # Conda packages
 RUN conda install -c conda-forge -y \
     h5py pyyaml tensorboard tensorboardx wandb yapf addict \
-    einops scipy plyfile termcolor matplotlib black open3d \
+    einops scipy plyfile termcolor matplotlib black open3d jupyterlab \
   && conda clean -afy
 
 # Pip packages
 RUN pip install --no-cache-dir --upgrade pip \
   && pip install --no-cache-dir \
-    scikit-learn netifaces pynvml rich safetensors pandas psutil \
+    scikit-learn netifaces pynvml rich safetensors pandas psutil jupyterlab "cuml-12==26.2.*" \
     peft timm huggingface_hub ftfy regex tqdm \
     torch-geometric \
   && pip install --no-cache-dir \

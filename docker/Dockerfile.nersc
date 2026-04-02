@@ -39,16 +39,16 @@ RUN wget https://www.mpich.org/static/downloads/${MPICH_VERSION}/mpich-${MPICH_V
 RUN /sbin/ldconfig
 
 # Build parallel HDF5 from source
-ARG HDF5_VERSION=hdf5_1.14.6
-RUN wget https://github.com/HDFGroup/hdf5/archive/refs/tags/${HDF5_VERSION}.tar.gz \
-  && tar xzf ${HDF5_VERSION}.tar.gz \
-  && cd hdf5-${HDF5_VERSION} \
+ARG HDF5_TAG=hdf5_1.14.6
+RUN wget https://github.com/HDFGroup/hdf5/archive/refs/tags/${HDF5_TAG}.tar.gz \
+  && tar xzf ${HDF5_TAG}.tar.gz \
+  && cd hdf5-${HDF5_TAG} \
   && CC=mpicc CXX=mpicxx ./configure --enable-parallel --enable-build-mode=production \
       --prefix=/opt/hdf5 --enable-static --enable-shared --with-pic \
   && make -j 8 \
   && make install \
   && cd .. \
-  && rm -rf hdf5-${HDF5_VERSION} ${HDF5_VERSION}.tar.gz
+  && rm -rf hdf5-${HDF5_TAG} ${HDF5_TAG}.tar.gz
 RUN /sbin/ldconfig
 ENV HDF5_DIR=/opt/hdf5
 ENV PATH=/opt/hdf5/bin:$PATH
@@ -59,7 +59,7 @@ ENV LD_LIBRARY_PATH=/opt/hdf5/lib:$LD_LIBRARY_PATH
 RUN pip install --no-cache-dir --upgrade pip \
   && pip install --no-cache-dir cython numpy \
   && MPICC=mpicc pip install --no-cache-dir --no-binary=mpi4py mpi4py \
-  && HDF5_MPI=ON CC=mpicc pip install --no-cache-dir --no-binary=h5py h5py
+  && HDF5_MPI=ON HDF5_VERSION=1.14.6 CC=mpicc pip install --no-cache-dir --no-binary=h5py h5py
 
 # Conda packages (h5py excluded -- built from source above with MPI)
 RUN conda install -c conda-forge -y \
@@ -69,7 +69,7 @@ RUN conda install -c conda-forge -y \
 
 # Pip packages
 RUN pip install --no-cache-dir \
-    scikit-learn netifaces nvidia-ml-py rich safetensors pandas psutil \
+    scikit-learn netifaces nvidia-ml-py rich safetensors pandas psutil jupyterlab "cuml-12==26.2.*" \
     peft timm huggingface_hub ftfy regex tqdm \
     torch-geometric \
   && pip install --no-cache-dir \
