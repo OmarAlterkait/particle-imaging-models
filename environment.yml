@@ -52,3 +52,4 @@ dependencies:
     - git+https://github.com/Dao-AILab/flash-attention.git
     - ./libs/pointops
     - ./libs/pointgroup_ops
+    - ./libs/cnms

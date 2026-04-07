@@ -10,13 +10,10 @@ from typing import Union
 
 import torch
 import torch.nn.functional as F
-
+from pytorch3d_ops.ops.knn import knn_gather, knn_points
 try:
-    from pytorch3d_ops.ops.knn import knn_gather, knn_points
     from pytorch3d_ops.structures.pointclouds import Pointclouds
 except ImportError:
-    knn_gather = None
-    knn_points = None
     Pointclouds = None
 
 
@@ -52,7 +49,7 @@ def _handle_pointcloud_input(
     Otherwise, return the input points (and normals) with the number of points per cloud
     set to the size of the second dimension of `points`.
     """
-    if isinstance(points, Pointclouds):
+    if Pointclouds is not None and isinstance(points, Pointclouds):
         X = points.points_padded()
         lengths = points.num_points_per_cloud()
         normals = points.normals_padded()  # either a tensor or None
@@ -110,8 +107,7 @@ def _chamfer_distance_single_direction(
             raise ValueError("weights cannot be negative.")
         if weights.sum() == 0.0:
             weights = weights.view(N, 1)
-            dummy_idx = torch.zeros((N, P1), dtype=torch.long, device=x.device)
-            return ((x.sum((1, 2)) * weights) * 0.0, (x.sum((1, 2)) * weights) * 0.0, dummy_idx)
+            return ((x.sum((1, 2)) * weights) * 0.0, (x.sum((1, 2)) * weights) * 0.0)
 
     cham_norm_x = x.new_zeros(())
 
@@ -154,8 +150,7 @@ def _chamfer_distance_single_direction(
 
     cham_dist = cham_x
     cham_normals = cham_norm_x if return_normals else None
-    idx = x_nn.idx[..., 0]  # (N, P1) nearest neighbor indices
-    return cham_dist, cham_normals, idx
+    return cham_dist, cham_normals
 
 
 def _apply_batch_reduction(
@@ -229,7 +224,7 @@ def chamfer_distance(
             equivalent to exactly matching normals, i.e. sign does not matter.
 
     Returns:
-        3-element tuple containing
+        2-element tuple containing
 
         - **loss**: Tensor giving the reduced distance between the pointclouds
           in x and the pointclouds in y. If point_reduction is None, a 2-element
@@ -242,10 +237,6 @@ def chamfer_distance(
           tuple of Tensors containing forward and backward loss terms shaped (N, P1)
           and (N, P2) (if single_directional is False) or a Tensor containing loss
           terms shaped (N, P1) (if single_directional is True) is returned.
-        - **idx**: LongTensor of nearest neighbor indices. If single_directional is True,
-          shape (N, P1) giving index into y for each point in x. If single_directional
-          is False, a 2-element tuple (idx_x, idx_y) where idx_x has shape (N, P1) and
-          idx_y has shape (N, P2).
     """
     _validate_chamfer_reduction_inputs(batch_reduction, point_reduction)
 
@@ -258,7 +249,7 @@ def chamfer_distance(
     x, x_lengths, x_normals = _handle_pointcloud_input(x, x_lengths, x_normals)
     y, y_lengths, y_normals = _handle_pointcloud_input(y, y_lengths, y_normals)
 
-    cham_x, cham_norm_x, idx_x = _chamfer_distance_single_direction(
+    cham_x, cham_norm_x = _chamfer_distance_single_direction(
         x,
         y,
         x_lengths,
@@ -273,9 +264,8 @@ def chamfer_distance(
     if single_directional:
         loss = cham_x
         loss_normals = cham_norm_x
-        idx = idx_x
     else:
-        cham_y, cham_norm_y, idx_y = _chamfer_distance_single_direction(
+        cham_y, cham_norm_y = _chamfer_distance_single_direction(
             y,
             x,
             y_lengths,
@@ -287,7 +277,6 @@ def chamfer_distance(
             norm,
             abs_cosine,
         )
-        idx = (idx_x, idx_y)
         if point_reduction == "max":
             loss = torch.maximum(cham_x, cham_y)
             loss_normals = None
@@ -303,5 +292,4 @@ def chamfer_distance(
                 loss_normals = (cham_norm_x, cham_norm_y)
             else:
                 loss_normals = None
-    loss, loss_normals = _apply_batch_reduction(loss, loss_normals, weights, batch_reduction)
-    return loss, loss_normals, idx
+    return _apply_batch_reduction(loss, loss_normals, weights, batch_reduction)

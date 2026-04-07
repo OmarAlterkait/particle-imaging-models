@@ -18,12 +18,12 @@ In sum, **pimm** integrates the following works:
 **Backbone**: 
 [MinkUNet](https://github.com/NVIDIA/MinkowskiEngine), [SpUNet](https://github.com/traveller59/spconv) (see [SparseUNet](#sparseunet)),
 [PTv1](https://arxiv.org/abs/2012.09164), [PTv2](https://arxiv.org/abs/2210.05666), [PTv3](https://arxiv.org/abs/2312.10035) (see [Point Transformers](#point-transformers)),
-[Swin3D](https://github.com/microsoft/Swin3D) (see [Swin3D](#swin3d));   
 **Instance Segmentation**: 
 [PointGroup](https://github.com/dvlab-research/PointGroup) (see [PointGroup](#pointgroup)),  
 [Panda Detector](https://arxiv.org/abs/2512.01324) (see [Panda Detector](#detector));  
 **Pre-training**: 
-[Sonata](https://arxiv.org/abs/2503.16429) (see [Sonata](#sonata));  
+[Sonata](https://arxiv.org/abs/2503.16429) (see [Sonata](#sonata)),
+[PoLAr-MAE](https://arxiv.org/abs/2502.02558) (see [PoLAr-MAE](#polar-mae));  
 **Datasets**:
 [PILArNet-M](https://arxiv.org/abs/2502.02558) (see [PILArNet-M](#pilarnet-m)) 
 
@@ -31,7 +31,7 @@ In sum, **pimm** integrates the following works:
 
 We are looking at including the following models/modalities in the future:
 - [ ] [SPINE](https://arxiv.org/abs/2102.01033), up until postprocessing module
-- [ ] [PoLAr-MAE](https://arxiv.org/abs/2502.02558) pre-training and fine-tuning
+- [x] [PoLAr-MAE](https://arxiv.org/abs/2502.02558) pre-training and fine-tuning
 - [ ] 2D TPC waveforms/networks, e.g., [NuGraph](https://arxiv.org/abs/2403.11872)
 - [ ] Optical waveforms
 
@@ -51,6 +51,23 @@ conda activate pimm-torch2.5.0-cu12.4
 ```
 
 **FlashAttention** Requires CUDA 11.6+. If you cannot upgrade, disable FlashAttention in model configs by setting `enable_flash=False`.
+
+### Docker / Apptainer
+
+Pre-built images are available on Docker Hub with all dependencies (FlashAttention, spconv, CUDA extensions, etc.) included. Images are automatically built on each push to `main`.
+
+| Image | Description |
+|-------|-------------|
+| `youngsm/pimm:pytorch2.5.0-cuda12.4` | Standard image |
+| `youngsm/pimm-nersc:pytorch2.5.0-cuda12.4` | NERSC variant with extra dependencies to allow for parallelized HDF5 io |
+
+```bash
+# Docker
+docker pull youngsm/pimm:pytorch2.5.0-cuda12.4
+
+# Apptainer / Singularity (converts to .sif)
+apptainer pull pimm.sif docker://youngsm/pimm:pytorch2.5.0-cuda12.4
+```
 
 ## Directory Structure
 
@@ -97,14 +114,7 @@ export PILARNET_DATA_ROOT_V1="/path/to/pilarnet/v1/data"
 export PILARNET_DATA_ROOT_V2="/path/to/pilarnet/v2/data"
 ```
 
-Alternatively, create a `.env` file in the repository root:
-
-```bash
-PILARNET_DATA_ROOT_V1=/path/to/pilarnet/v1/data
-PILARNET_DATA_ROOT_V2=/path/to/pilarnet/v2/data
-```
-
-The training scripts automatically source this file if it exists.
+You can add this to your `~/.bashrc` file to avoid exporting these variables for each training run.
 
 ## Quick Start
 
@@ -123,6 +133,45 @@ This will:
 - Save experiment outputs, including model checkpoints, to `exp/panda/semseg/my_first_experiment/`
 
 If you want to save model checkpoints to a different directory that is more amenable to storing many large files, set the environment variable `MODEL_DIR=/path/to/model/dir/`. Model weights will be stored there, with a symbolic link to the experiment folder.
+
+<details>
+<summary><b>Using Docker / Apptainer</b></summary>
+
+**Docker**
+
+```bash
+# Interactive session with GPU access
+docker run --gpus all \
+  -v /path/to/pilarnet:/data \
+  -e PILARNET_DATA_ROOT_V2=/data/v2 \
+  -it youngsm/pimm:pytorch2.5.0-cuda12.4 bash
+
+# Then run training commands as usual inside the container
+sh scripts/train.sh -m 1 -g 1 -d panda/semseg -c semseg-pt-v3m2-pilarnet-ft-5cls-lin -n my_exp
+```
+
+**Apptainer / Singularity**
+
+```bash
+# Interactive
+apptainer run --nv --bind /path/to/pilarnet:/data pimm.sif bash
+
+# One-shot training
+apptainer run --nv --bind /path/to/pilarnet:/data pimm.sif \
+  sh scripts/train.sh -m 1 -g 1 -d panda/semseg -c semseg-pt-v3m2-pilarnet-ft-5cls-lin -n my_exp
+```
+
+**SLURM + Apptainer (multi-node)**
+
+For HPC clusters, use the NERSC image with `srun`:
+
+```bash
+srun apptainer run --nv --bind /path/to/data pimm-nersc.sif \
+  sh scripts/train.sh -m $SLURM_NNODES -g $SLURM_GPUS_ON_NODE \
+    -d panda/pretrain -c pretrain-sonata-v1m1-pilarnet-smallmask -n my_exp
+```
+
+</details>
 
 ### Multi-GPU Training Example
 
@@ -219,23 +268,6 @@ If you can not upgrade your local environment to satisfy the requirements (CUDA 
 
 `PTv2 Mode2` enables AMP and disables _Position Encoding Multiplier_ & _Grouped Linear_. 
 
-### Swin3D
-
-[Swin3D](https://github.com/microsoft/Swin3D) is a hierarchical 3D Swin Transformer backbone.
-
-To use:
-1. Additional requirements:
-```bash
-# 1. Install MinkEngine v0.5.4, follow readme in https://github.com/NVIDIA/MinkowskiEngine;
-# 2. Install Swin3D, mainly for cuda operation:
-cd libs
-git clone https://github.com/microsoft/Swin3D.git
-cd Swin3D
-pip install ./
-```
-2. Uncomment `# from .swin3d import *` in `pointcept/models/__init__.py`.
-3. Change the backbone in any config to `Swin3D-v1m1`
-
 ### PointGroup
 
 [PointGroup](https://github.com/dvlab-research/PointGroup) is an instance segmentation method that clusters points into object instances.
@@ -247,6 +279,39 @@ pip install ./
 ### Sonata
 
 [Sonata](https://arxiv.org/abs/2503.16429) is a discriminative self-supervised pre-training method similar to DINO for point clouds.
+
+### PoLAr-MAE
+
+[PoLAr-MAE](https://arxiv.org/abs/2502.02558) is a masked autoencoder for self-supervised pre-training on LArTPC point clouds. It tokenizes point clouds via FPS + ball query grouping, masks a subset of tokens, and reconstructs the masked regions via chamfer and energy losses.
+
+Pre-trained and fine-tuned checkpoints are available from the [PoLAr-MAE releases](https://github.com/DeepLearnPhysics/PoLAr-MAE/releases/tag/weights):
+
+| Checkpoint | Description |
+|---|---|
+| `polarmae_pretrain.ckpt` | Self-supervised pre-trained encoder (PILArNet v1) |
+| `polarmae_fft_segsem.ckpt` | Full fine-tuned semantic segmentation (4-class, mF1=0.82) |
+
+**Pre-training**:
+```bash
+sh scripts/train.sh -g 4 -d polarmae -c pretrain-polarmae-native-pilarnet -n polarmae_pretrain
+```
+
+**Semantic segmentation fine-tuning** (from pre-trained checkpoint):
+```bash
+# Full fine-tuning (FFT)
+sh scripts/train.sh -g 4 -d polarmae/semseg -c semseg-polarmae-pilarnet-fft -n polarmae_fft \
+    -w /path/to/polarmae_pretrain.ckpt
+
+# Parameter-efficient fine-tuning (PEFT, frozen encoder)
+sh scripts/train.sh -g 4 -d polarmae/semseg -c semseg-polarmae-pilarnet-peft -n polarmae_peft \
+    -w /path/to/polarmae_pretrain.ckpt
+```
+
+**Evaluate released checkpoint**:
+```bash
+sh scripts/train.sh -g 1 -d polarmae/semseg -c semseg-polarmae-pilarnet-fft-reproduce -n polarmae_eval \
+    -w polarmae_fft_segsem.ckpt -- --options epoch=1
+```
 
 ### Model Versioning
 

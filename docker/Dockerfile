@@ -51,4 +51,8 @@ RUN MAX_JOBS=1 TORCH_CUDA_ARCH_LIST="${TORCH_CUDA_ARCH_LIST}" \
     pip install --no-cache-dir /tmp/libs/pointops -v --no-build-isolation \
  && MAX_JOBS=1 TORCH_CUDA_ARCH_LIST="${TORCH_CUDA_ARCH_LIST}" \
     pip install --no-cache-dir /tmp/libs/pointgroup_ops -v --no-build-isolation \
+ && MAX_JOBS=1 TORCH_CUDA_ARCH_LIST="${TORCH_CUDA_ARCH_LIST}" \
+    pip install --no-cache-dir /tmp/libs/cnms -v --no-build-isolation \
+ && MAX_JOBS=1 FORCE_CUDA=1 TORCH_CUDA_ARCH_LIST="${TORCH_CUDA_ARCH_LIST}" \
+    pip install --no-cache-dir /tmp/libs/pytorch3d_ops -v --no-build-isolation \
  && rm -rf /tmp/libs
