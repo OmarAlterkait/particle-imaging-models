@@ -11,6 +11,8 @@ Author: Modified from original pointcept train.py
 import sys
 import os
 import logging
+import torch.multiprocessing as mp
+mp.set_start_method("spawn", force=True)
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from pimm.engines.defaults import (
     default_argument_parser,
@@ -19,6 +21,7 @@ from pimm.engines.defaults import (
 )
 from pimm.engines.train import TRAINERS
 from pimm.utils import comm
+
 
 def main_worker(cfg):
     """Main worker function that runs the training."""

@@ -1,16 +1,21 @@
+<div align="center">
+
 # Particle Imaging Models (pimm)
-## Foundation model research for particle imaging detectors
+### Foundation model research for particle imaging detectors
+
+</div>
 
 A codebase for perception research for time projection chambers (TPCs), with a focus on liquid argon TPCs, built on the [Pointcept](https://github.com/Pointcept/Pointcept) training and inference framework.
 
-This repository currently deals with _3D charge clouds_ only, with plans to incorporate 2D
+This repository currently deals with 3D charge clouds only, with plans to incorporate 2D
 images (e.g., wireplane waveforms) and other modalities in the near future.
 
 ## Overview
 
-**pimm** adapts 3D point cloud methods for event reconstruction in LArTPC detectors. This repository provides:
+**pimm** adapts methods in deep learning and computer vision for event reconstruction in LArTPC detectors. This repository provides:
 
-- **Self-supervised pre-training**: discriminative pre-training ([Sonata](https://arxiv.org/abs/2503.16429))
+- **Self-supervised pre-training**: discriminative pre-training ([Sonata](https://arxiv.org/abs/2503.16429)) for learning good representations
+of LArTPC images.
 - **Panoptic segmentation** (PointGroup, Panda Detector) models for particle and interaction instance/semantic segmentation
 - **Semantic segmentation** models for per-pixel segmentation.
 
@@ -35,437 +40,205 @@ We are looking at including the following models/modalities in the future:
 - [ ] 2D TPC waveforms/networks, e.g., [NuGraph](https://arxiv.org/abs/2403.11872)
 - [ ] Optical waveforms
 
-## Installation
-
-### Requirements
-- Ubuntu: 18.04 and above
-- CUDA: 11.3 and above (11.6+ recommended for FlashAttention support)
-- PyTorch: 2.0.0 and above
-
-### Environment Setup
-
-```bash
-# Create conda environment
-conda env create -f environment.yml --verbose
-conda activate pimm-torch2.5.0-cu12.4
-```
-
-**FlashAttention** Requires CUDA 11.6+. If you cannot upgrade, disable FlashAttention in model configs by setting `enable_flash=False`.
-
-### Docker / Apptainer
-
-Pre-built images are available on Docker Hub with all dependencies (FlashAttention, spconv, CUDA extensions, etc.) included. Images are automatically built on each push to `main`.
-
-| Image | Description |
-|-------|-------------|
-| `youngsm/pimm:pytorch2.5.0-cuda12.4` | Standard image |
-| `youngsm/pimm-nersc:pytorch2.5.0-cuda12.4` | NERSC variant with extra dependencies to allow for parallelized HDF5 io |
-
-```bash
-# Docker
-docker pull youngsm/pimm:pytorch2.5.0-cuda12.4
-
-# Apptainer / Singularity (converts to .sif)
-apptainer pull pimm.sif docker://youngsm/pimm:pytorch2.5.0-cuda12.4
-```
-
-## Directory Structure
-
-Key directories in this repository:
-
-- `configs/` - Configuration files for models, datasets, and training
-- `pimm/` - Main codebase (models, datasets, training engine, utilities)
-- `scripts/` - Training and testing shell scripts
-- `tools/` - Python entry point scripts (`train.py`, `test.py`)
-- `exp/` - Experiment outputs (logs, checkpoints, configs)
-- `libs/` - External library dependencies
-
-## Data Preparation
-
-### 1. PILArNet Dataset
-
-PILArNet has two revisions:
-
-- **v1**: Original dataset from the PoLAr-MAE paper.
-
-- **v2**: Reprocessed dataset with PID information, momentum, and vertex information used in the Panda paper.
-
-To download either or both, do the following:
-
-```python
-# Download only v1; saved to ~/.cache/pimm/pilarnet/v1
-python tools/download_pilarnet.py --version v1
-
-# Download only v2; saved to ~/.cache/pimm/pilarnet/v2
-python tools/download_pilarnet.py --version v2
-
-# Save both to custom output directory
-python tools/download_pilarnet.py --version both --output-dir /path/to/data
-```
-
-The events in v1 and v2 splits are different, so models trained on v1 should be evaluated on v1. All future models should be trained on v2.
-
-### Environment Variables
-
-Set the following environment variables to point to your PILArNet data:
-
-```bash
-export PILARNET_DATA_ROOT_V1="/path/to/pilarnet/v1/data"
-export PILARNET_DATA_ROOT_V2="/path/to/pilarnet/v2/data"
-```
-
-You can add this to your `~/.bashrc` file to avoid exporting these variables for each training run.
-
 ## Quick Start
 
-### Single-GPU Training Example
-
-For users with a single GPU, start with a simple training run:
+### Using the container (recommended)
 
 ```bash
-# Single GPU training (fine-tuning for semantic segmentation)
-sh scripts/train.sh -m 1 -g 1 -d panda/semseg -c semseg-pt-v3m2-pilarnet-ft-5cls-lin -n my_first_experiment
+git clone https://github.com/youngsm/particle-imaging-models.git
+cd particle-imaging-models
+apptainer pull /path/to/pimm.sif docker://youngsm/pimm:pytorch2.5.0-cuda12.4
 ```
 
-This will:
-- Use 1 machine (`-m 1`) with 1 GPU (`-g 1`)
-- Load config from `configs/panda/semseg/semseg-pt-v3m2-pilarnet-ft-5cls-lin.py`
-- Save experiment outputs, including model checkpoints, to `exp/panda/semseg/my_first_experiment/`
-
-If you want to save model checkpoints to a different directory that is more amenable to storing many large files, set the environment variable `MODEL_DIR=/path/to/model/dir/`. Model weights will be stored there, with a symbolic link to the experiment folder.
-
-<details>
-<summary><b>Using Docker / Apptainer</b></summary>
-
-**Docker**
+#### Train (single GPU):
 
 ```bash
-# Interactive session with GPU access
-docker run --gpus all \
-  -v /path/to/pilarnet:/data \
-  -e PILARNET_DATA_ROOT_V2=/data/v2 \
-  -it youngsm/pimm:pytorch2.5.0-cuda12.4 bash
-
-# Then run training commands as usual inside the container
-sh scripts/train.sh -m 1 -g 1 -d panda/semseg -c semseg-pt-v3m2-pilarnet-ft-5cls-lin -n my_exp
+apptainer exec --nv --bind XXX /path/to/pimm.sif \
+  sh scripts/train.sh -g 1 -d panda/pretrain -c pretrain-sonata-v1m1-pilarnet-smallmask
 ```
 
-**Apptainer / Singularity**
+#### Multi-GPU:
+
+Change `-g 1` (1 GPU) to `-g 4` (4 GPUs), or omit `-g` to use all available GPUs.
+
+#### Multi-Node:
+
+For training on Slurm configurations, you can use the `multinode.slurm.sbatch` file in `scripts/slurm/` to submit your sbatch job.
+
+To get started just adjust the number of nodes and GPUs
+
+```
+#SBATCH --ntasks-per-node=4
+#SBATCH --nodes=2
+```
+
+Then modify `-m` and `-g` to the number of nodes and number of tasks (i.e., GPUs) per node: `-m 2 -g 4`
+
+> See [Dataset Preparation](#dataset-preparation) to download PILArNet-M.
+
+### From source
 
 ```bash
-# Interactive
-apptainer run --nv --bind /path/to/pilarnet:/data pimm.sif bash
-
-# One-shot training
-apptainer run --nv --bind /path/to/pilarnet:/data pimm.sif \
-  sh scripts/train.sh -m 1 -g 1 -d panda/semseg -c semseg-pt-v3m2-pilarnet-ft-5cls-lin -n my_exp
+git clone https://github.com/youngsm/particle-imaging-models.git
+cd particle-imaging-models
+conda env create -f environment.yml
+conda activate pimm-torch2.5.0-cu12.4
+sh scripts/train.sh -g 1 -d panda/pretrain -c pretrain-sonata-v1m1-pilarnet-smallmask
 ```
 
-**SLURM + Apptainer (multi-node)**
+Requires CUDA 11.6+ for FlashAttention (set `enable_flash=False` in configs if unavailable).
 
-For HPC clusters, use the NERSC image with `srun`:
+## Multi-Node Training
+
+SLURM templates are provided for multi-node training:
 
 ```bash
-srun apptainer run --nv --bind /path/to/data pimm-nersc.sif \
-  sh scripts/train.sh -m $SLURM_NNODES -g $SLURM_GPUS_ON_NODE \
-    -d panda/pretrain -c pretrain-sonata-v1m1-pilarnet-smallmask -n my_exp
+cp scripts/slurm/multinode.slurm.sbatch my_job.sh  # generic cluster
+cp scripts/slurm/multinode.nersc.sbatch my_job.sh   # NERSC Perlmutter
+# edit SBATCH headers + experiment section, then:
+sbatch my_job.sh
 ```
 
-</details>
+The key rule: `--ntasks-per-node` must equal the number of GPUs per node. The training script handles distributed setup automatically via SLURM environment variables.
 
-### Multi-GPU Training Example
+## Training & Testing
 
-For multi-GPU setups:
+The entry point is `scripts/train.sh`:
 
 ```bash
-# Pre-training with 4 GPUs on 1 machine
-sh scripts/train.sh -m 1 -g 4 -d panda/pretrain -c pretrain-sonata-v1m1-pilarnet-smallmask -n my_pretrain_exp
-
-# Fine-tuning with pre-trained weights
-sh scripts/train.sh -m 1 -g 4 -d panda/semseg -c semseg-pt-v3m2-pilarnet-ft-5cls-lin -n my_finetune_exp -w /path/to/checkpoint.pth
+sh scripts/train.sh -d <dataset> -c <config> [options]
 ```
 
-## Data Format
+| Flag | Description |
+|------|-------------|
+| `-d` | Config directory (e.g., `panda/pretrain`, `panda/semseg`) |
+| `-c` | Config name without `.py` |
+| `-n` | Experiment name (default: auto-generated) |
+| `-g` | GPUs per machine (default: all available) |
+| `-m` | Number of machines (default: 1) |
+| `-w` | Path to checkpoint (for fine-tuning or resuming) |
+| `-r true` | Resume training from last checkpoint |
+| `-C` | Dev mode: skip code snapshot, run from repo source |
+| `-h` | Show full help |
 
-Point cloud data should be organized with the following structure:
+```bash
+# List available configs
+sh scripts/train.sh --list
+sh scripts/train.sh --list panda/pretrain
 
-```python
-{
-    'coord': (N, 3),           # 3D hit positions [x, y, z]
-    'feat': (N, C),            # Hit features (charge, time, etc.)
-    'segment': (N,1),          # Semantic labels (optional, for training)
-    'instance': (N,1),         # Instance IDs (optional, for training)
-}
+# Override config values
+sh scripts/train.sh -d panda/pretrain -c pretrain-sonata-v1m1-pilarnet-smallmask \
+  -- --options epoch=10 data.train.max_len=1000
+
+# Fine-tune from pre-trained checkpoint
+sh scripts/train.sh -g 4 -d panda/semseg -c semseg-pt-v3m2-pilarnet-ft-5cls-lin \
+  -w /path/to/checkpoint.pth
+
+# Resume
+sh scripts/train.sh -d panda/pretrain -c pretrain-sonata-v1m1-pilarnet-smallmask \
+  -n my_experiment -r true
 ```
 
-The data often needs to be re-scaled to new domains that lead to more efficient training
-(e.g., centering/scaling of coordinates to [-1,1]$^3$). This can be done within the Dataset class, or from a Transform. See the transform sections of configuration files for more details.
+Testing:
 
-### Packed Data Format
+```bash
+sh scripts/test.sh -d panda/semseg -c semseg-pt-v3m2-pilarnet-ft-5cls-lin \
+  -n my_experiment -w model_best
+```
 
-This library works with packed data, where all batched quantities are in two dimensions instead of three, i.e. `(N, 3)` instead of `(B, N, 3)`. This is because point clouds are variable length, and getting to a 3 dimensional tensor would require padding. Instead of padding, there is an `offset` tensor, which is of length `B` and gives the indices in the packed tensors at which a point cloud ends and a new one starts.
+By default, `train.sh` snapshots the codebase into `exp/<dataset>/<name>/code/` for reproducibility. Use `-C` to skip this during development.
 
-`Offset` is conceptually similar to the concept of `Batch` in PyG, and can be seen as the cumulative sum of a `lengths` tensor. A visual illustration of batch and offset is as follows:
+Checkpoints save to `exp/<dataset>/<name>/model/`. To redirect to a separate disk, set `MODEL_DIR` in your `.env` file or environment.
 
-<p align="center">
-    <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/pointcept/assets/main/pointcept/offset_dark.png">
-    <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/pointcept/assets/main/pointcept/offset.png">
-    <img alt="pointcept" src="https://raw.githubusercontent.com/pointcept/assets/main/pointcept/offset.png" width="480">
-    </picture><br>
-</p>
+## Configuration
 
-## Configuration System
-
-Configurations are Python dictionary-based files located in the `configs/` directory. Each config file defines the model architecture, dataset settings, training hyperparameters, and different hooks to run during training (checkpoint saving, logging, evaluation).
-
-### Config Structure
-
-Configs use a hierarchical structure with `_base_` inheritance:
+Configs are Python dicts in `configs/` with `_base_` inheritance:
 
 ```python
 _base_ = ["../../_base_/default_runtime.py"]
-
-# Override or add settings
 model = dict(type="PT-v3m2", ...)
 data = dict(train=dict(...), val=dict(...))
 ```
 
-### Modifying Configs
+Override any value from the command line with `-- --options key=value nested.key=value`.
 
-You can modify configs in two ways:
+## Dataset Preparation
 
-1. Edit the config file directly
-2. Override via command line using `--options`:
-   ```bash
-   sh scripts/train.sh ... -- --options epoch=50 data.train.max_len=500000
-   ```
+### PILArNet-M
 
-Example configs can be found in:
-- `configs/panda/pretrain/` - Pre-training configurations
-- `configs/panda/semseg/` - Semantic segmentation configurations  
-- `configs/panda/panseg/` - Panoptic segmentation configurations
+Download the dataset from Hugging Face:
+
+```bash
+python tools/download_pilarnet.py --version v2
+```
+
+Data saves to `~/.cache/pimm/pilarnet/v2` by default and is auto-detected. To use a custom path, create a `.env` file in the repo root (see `example.env`):
+
+```
+PILARNET_DATA_ROOT_V2=/path/to/pilarnet/v2
+```
+
+PILArNet has two revisions. **v2** is recommended for new models (adds PID, momentum, and vertex information). **v1** is the original dataset from the PoLAr-MAE paper. Events differ between splits, so models trained on v1 should be evaluated on v1.
+
+### Docker / Apptainer
+
+Pre-built images are available on Docker Hub:
+
+| Image | Description |
+|-------|-------------|
+| `youngsm/pimm:pytorch2.5.0-cuda12.4` | Standard image |
+| `youngsm/pimm-nersc:pytorch2.5.0-cuda12.4` | NERSC variant with extra dependencies |
+
+```bash
+apptainer pull /path/to/pimm.sif docker://youngsm/pimm:pytorch2.5.0-cuda12.4
+```
 
 ## Model Zoo
 
-### SparseUNet
-
-This repository provides `SparseUNet` implemented by `SpConv` and `MinkowskiEngine`. The SpConv version is recommended since SpConv is easy to install and faster than MinkowskiEngine. Meanwhile, SpConv is also widely applied in outdoor perception.
-
-To use:
-1. Install wither MinkowskiEngine or spconv (recommended)
-3. Change the backbone in any config to `SpUNet-v1m1` or e.g. `MinkUNet50`. See [mink_unet.py](pimm/models/sparse_unet/mink_unet.py) for more model definitions.
-
-### Point Transformers
-
-- **PTv3**
-
-[PTv3](https://arxiv.org/abs/2312.10035) is an efficient backbone model that achieves SOTA performances across indoor and outdoor scenarios. The full PTv3 relies on FlashAttention, while FlashAttention relies on CUDA 11.6 and above, make sure your local Pointcept environment satisfies the requirements. PTv3 also requires `spconv`.
-
-If you can not upgrade your local environment to satisfy the requirements (CUDA >= 11.6), then you can disable FlashAttention by setting the model parameter `enable_flash` to `false`.
-
-- **PTv2 mode2**
-
-`PTv2 Mode2` enables AMP and disables _Position Encoding Multiplier_ & _Grouped Linear_. 
-
-### PointGroup
-
-[PointGroup](https://github.com/dvlab-research/PointGroup) is an instance segmentation method that clusters points into object instances.
-
-### Panda Detector
-
-[Panda Detector](https://arxiv.org/abs/2512.01324) is a Mask2former-like objection detection framework for particle trajectories in LArTPC images.
-
-### Sonata
-
-[Sonata](https://arxiv.org/abs/2503.16429) is a discriminative self-supervised pre-training method similar to DINO for point clouds.
-
-### PoLAr-MAE
-
-[PoLAr-MAE](https://arxiv.org/abs/2502.02558) is a masked autoencoder for self-supervised pre-training on LArTPC point clouds. It tokenizes point clouds via FPS + ball query grouping, masks a subset of tokens, and reconstructs the masked regions via chamfer and energy losses.
-
-Pre-trained and fine-tuned checkpoints are available from the [PoLAr-MAE releases](https://github.com/DeepLearnPhysics/PoLAr-MAE/releases/tag/weights):
-
-| Checkpoint | Description |
-|---|---|
-| `polarmae_pretrain.ckpt` | Self-supervised pre-trained encoder (PILArNet v1) |
-| `polarmae_fft_segsem.ckpt` | Full fine-tuned semantic segmentation (4-class, mF1=0.82) |
-
-**Pre-training**:
-```bash
-sh scripts/train.sh -g 4 -d polarmae -c pretrain-polarmae-native-pilarnet -n polarmae_pretrain
-```
-
-**Semantic segmentation fine-tuning** (from pre-trained checkpoint):
-```bash
-# Full fine-tuning (FFT)
-sh scripts/train.sh -g 4 -d polarmae/semseg -c semseg-polarmae-pilarnet-fft -n polarmae_fft \
-    -w /path/to/polarmae_pretrain.ckpt
-
-# Parameter-efficient fine-tuning (PEFT, frozen encoder)
-sh scripts/train.sh -g 4 -d polarmae/semseg -c semseg-polarmae-pilarnet-peft -n polarmae_peft \
-    -w /path/to/polarmae_pretrain.ckpt
-```
-
-**Evaluate released checkpoint**:
-```bash
-sh scripts/train.sh -g 1 -d polarmae/semseg -c semseg-polarmae-pilarnet-fft-reproduce -n polarmae_eval \
-    -w polarmae_fft_segsem.ckpt -- --options epoch=1
-```
-
 ### Model Versioning
 
-Models are versioned as e.g., `v1m2`, which corresponds to version 1 mode 2. We have:
-- SparseUResNet, Point Transformer (V1-4), and Swin3D backbones
-- Sonata-based pre-training and two object detection methods (PointGroup and Detector)
+Models use `vXmY` naming (version X, mode Y). Different modes indicate small architecture variants, while versions indicate large architectural changes.
 
-## Training
+### Backbones
 
-The entry point is `scripts/train.sh`. The script accepts the following key arguments:
+- **[PTv3](https://arxiv.org/abs/2312.10035)** (Point Transformer V3) — efficient backbone with FlashAttention. Requires `spconv` and CUDA 11.6+ for FlashAttention (which is optional)
+- **SparseUNet** — SpConv-based UNet.
+- **[PTv2](https://arxiv.org/abs/2210.05666)**, **[PTv1](https://arxiv.org/abs/2012.09164)** — earlier Point Transformer versions.
 
-- `-m`: Number of machines (nodes)
-- `-g`: Number of GPUs per machine
-- `-d`: Config directory (e.g., `panda/pretrain`, `panda/semseg`)
-- `-c`: Config name (without `.py` extension)
-- `-n`: Experiment name (used for output directory)
-- `-w`: Path to checkpoint file (for fine-tuning/resuming)
+### Pre-training
 
-Additional arguments modifying underlying config values by passing `-- --options keyword1=val1 keyword2=val2` at the end of the
-training scripts. E.g., to change the number of epochs to 10, pass `sh scripts/train.sh -g 1 ... -- --options epoch=10`.
+- **[Panda/Sonata](https://arxiv.org/abs/2503.16429)** — DINO-style self-supervised learning with teacher-student framework and online prototype clustering. Used in Panda.
+- **[PoLAr-MAE](https://arxiv.org/abs/2502.02558)** — masked autoencoder with chamfer + energy reconstruction losses.
 
-To guarantee reproducibility as the codebase changes over time, the entire repository is copied into the experiment folder prior to running each experiment.
+### Instance / Panoptic Segmentation
 
-### Pre-training Example
+- **[PointGroup](https://github.com/dvlab-research/PointGroup)** — clustering-based instance segmentation.
+- **[Panda Detector](https://arxiv.org/abs/2512.01324)** — Mask2Former-style detection modified to take low energy deposits into account.
 
-```bash
-# Pre-training with Sonata on 1 machine with 4 GPUs
-# Replace 'my_pretrain_exp' with your desired experiment name
-sh scripts/train.sh -m 1 -g 4 -d panda/pretrain -c pretrain-sonata-v1m1-pilarnet-smallmask -n my_pretrain_exp
+## Data Format
+
+Point clouds use a **packed tensor format**: `(N, 3)` instead of `(B, N, 3)` to avoid padding variable-length clouds. An `offset` tensor of length `B` gives the cumulative sum of point counts per sample.
+
+```python
+{"coord": (N, 3), "feat": (N, C), "segment": (N, 1), "instance": (N, 1)}
 ```
-
-### Fine-tuning Examples
-
-```bash
-# Semantic segmentation using linear probing on a pre-trained weight
-# Replace 'my_semseg_exp' with your experiment name and '/path/to/checkpoint.pth' with actual checkpoint path
-sh scripts/train.sh -m 1 -g 4 -d panda/semseg -c semseg-pt-v3m2-pilarnet-ft-5cls-lin -n my_semseg_exp -w /path/to/checkpoint.pth
-
-# Particle object detection using frozen encoder outputs
-# 4 GPUs each on 2 machines (8 GPUs total)
-sh scripts/train.sh -m 2 -g 4 -d panda/panseg -c detector-v1m1-pt-v3m2-ft-pid-dec -n my_detector_exp -w /path/to/checkpoint.pth
-
-# Interaction-level object detection using frozen encoder outputs
-sh scripts/train.sh -m 2 -g 4 -d panda/panseg -c detector-v1m1-pt-v3m2-ft-vtx-dec -n my_vtx_detector_exp -w /path/to/checkpoint.pth
-```
-
-### SLURM Cluster Training
-
-For users on HPC clusters, SLURM scripts are found in `scripts/slurm/`. Example:
-
-```bash
-sbatch scripts/slurm/panseg/pilarnet_1node_amp_seed0_pid_dec_v1m1.sh
-```
-
-### Dataset Version Notes
-
-- The PoLAr-MAE model was pre-trained and fine-tuned on v1
-- The Panda model was pre-trained on v1, fine-tuned for semantic segmentation on v1, and fine-tuned for object detection on v2
-
-## Inference/Testing
-
-After training a model, you can evaluate it on test/validation sets using `scripts/test.sh`.
-
-### Basic Usage
-
-```bash
-# Test on validation set
-# -d: Dataset/config directory (must match training config)
-# -c: Config name (must match training config)
-# -n: Experiment name (must match training experiment name)
-# -w: Weight file name (without .pth extension, e.g., 'model_best' or 'model_last')
-sh scripts/test.sh -d panda/semseg -c semseg-pt-v3m2-pilarnet-ft-5cls-lin -n my_semseg_exp -w model_best
-```
-
-### Test Mode vs Train Mode
-
-The test script runs the model in evaluation mode with:
-- No data augmentation (deterministic transforms)
-- Batch normalization in eval mode
-- Gradient computation disabled
-- Metrics computed on the full test/validation set
-
-Test configurations are typically defined in the config file's `data.test` section, which may include different transforms optimized for inference (e.g., test-time augmentation, different voxelization strategies).
 
 ## Logging
 
-Logging is available through either _Tensorboard_ or _Weights and Biases_ (recommended).
-By default, both `tensorboard` and `wandb` are enabled. There are some usage notes related to `wandb`:
-1. Disable by setting `use_wandb=False`;
-2. Sync with  `wandb` remote server by `wandb login` in the terminal.
-3. Set `wandb_project` in the config to set the wandb project to use.
-4. Either set `wandb_run_name` or use `WandbNamer` to set the individual run name. `WandbNamer` is a hook which takes a set of defined config variables and sets them as the run name. E.g.,
+Both TensorBoard and Weights & Biases are enabled by default. Set `use_wandb=False` to disable W&B. To authenticate, either run `wandb login` or add `WANDB_API_KEY=your_key` to your `.env` file (see `example.env`).
 
 ```python
 hooks = [
-    dict(
-        type="WandbNamer",
-        keys=("model.type", "data.train.max_len", "amp_dtype", "seed"),
-    ),
+    dict(type="WandbNamer", keys=("model.type", "data.train.max_len", "amp_dtype", "seed")),
     ...
 ]
 ```
 
-## Troubleshooting
-
-### CUDA Version Compatibility
-
-**Issue**: Errors related to CUDA version mismatch or FlashAttention not working.
-
-**Solutions**:
-- Ensure your CUDA version matches your PyTorch installation: `python -c "import torch; print(torch.version.cuda)"`
-- For FlashAttention support, CUDA 11.6+ is required. If you cannot upgrade:
-  - Set `enable_flash=False` in model configs
-
-### Environment Variable Errors
-
-**Issue**: `PILARNET_DATA_ROOT_V1/V2 is not set` error.
-
-**Solutions**:
-- Set environment variables: `export PILARNET_DATA_ROOT_V1=/path/to/data` 
-- Ensure the paths point to directories containing `train/`, `val/`, and `test/` subdirectories with H5 files
-
-### Importing issues
-
-**Issue**: Can't import `pimm`. 
-
-**Solutions**:
-- **SpConv** (recommended): Ensure CUDA toolkit version matches PyTorch. Try: `pip install spconv-cu118` (adjust CUDA version)
-- **MinkowskiEngine**: More complex to install. Consider using SpConv instead, which is easier and faster
-- Verify CUDA is properly installed: `nvcc --version`
-
-### Out of Memory (OOM) Errors
-
-**Issue**: GPU runs out of memory during training.
-
-**Solutions**:
-- Reduce batch size in config
-- Increase the number of GPUs used.
-- Use mixed precision training (already enabled by default with `enable_amp=True`)
-
-### Checkpoint Loading Errors
-
-**Issue**: Cannot load checkpoint or checkpoint path not found.
-
-**Solutions**:
-- Use absolute paths for checkpoint files: `-w /full/path/to/checkpoint.pth`
-- Check that the checkpoint file exists and is not corrupted
-- Ensure the checkpoint matches the model architecture in your config
-- For resuming training, use `-r true` flag: `sh scripts/train.sh ... -r true`
 
 ## Acknowledgements
 
-This codebase is built on [Pointcept](https://github.com/Pointcept/Pointcept) and adapted for TPC data. We thank the Pointcept team for their excellent framework.
+Built on [Pointcept](https://github.com/Pointcept/Pointcept). Thanks to them!
 
 ## License
 
-This project inherits the MIT license from Pointcept.
+MIT (inherited from Pointcept).

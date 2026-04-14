@@ -8,8 +8,9 @@ Please cite our work if the code is helpful to you.
 import sys
 import os
 import logging
+import torch.multiprocessing as mp
+mp.set_start_method("spawn", force=True)
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
 from pimm.engines.defaults import (
     default_argument_parser,
     default_config_parser,

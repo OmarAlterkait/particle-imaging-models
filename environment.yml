@@ -53,3 +53,4 @@ dependencies:
     - ./libs/pointops
     - ./libs/pointgroup_ops
     - ./libs/cnms
+    - ./libs/pytorch3d_ops

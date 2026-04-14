@@ -1,7 +1,11 @@
 #!/bin/sh
 
 cd $(dirname $(dirname "$0")) || exit
+ROOT_DIR=$(pwd)
 PYTHON=python
+
+# Load .env if present
+[ -f "$ROOT_DIR/.env" ] && set -a && . "$ROOT_DIR/.env" && set +a
 
 TEST_CODE=test.py
 

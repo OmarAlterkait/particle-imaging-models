@@ -1410,17 +1410,17 @@ class FeatureStdMonitor(HookBase):
             handle.remove()
         self.hook_handles = []
         
-        # Check if model is Sonata or contains Sonata
+        # Check if model has student/teacher structure (Sonata, JEPA, etc.)
         sonata_module = None
         if hasattr(model, 'sonata'):
             sonata_module = model.sonata
         elif isinstance(model, torch.nn.ModuleDict) and 'sonata' in model:
             sonata_module = model['sonata']
-        elif hasattr(model, '__class__') and 'Sonata' in model.__class__.__name__:
+        elif hasattr(model, 'student') and hasattr(model, 'teacher'):
             sonata_module = model
-            
+
         if not sonata_module:
-            self.trainer.logger.warning("Could not find Sonata module for feature monitoring")
+            self.trainer.logger.warning("Could not find student/teacher module for feature monitoring")
             return
         
         # Register hooks on teacher backbone

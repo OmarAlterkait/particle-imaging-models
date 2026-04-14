@@ -16,3 +16,4 @@ image/
 log/
 .vscode
 .idea
+.env
