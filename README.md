@@ -143,37 +143,6 @@ By default, `train.sh` snapshots the codebase into `exp/<dataset>/<name>/code/` 
 
 Model checkpoints, which can be quite large, are saved to `exp/<dataset>/<name>/model/`. To redirect to a separate disk, set `MODEL_DIR` in your `.env` file or environment; this will save the checkpoint to `MODEL_DIR` and symlink it to `exp/<dataset>/<name>/model`.
 
-## Data Format
-
-Point cloud data should be organized with the following structure:
-
-```python
-{
-    'coord': (N, 3),           # 3D hit positions [x, y, z]
-    'feat': (N, C),            # Hit features (charge, time, etc.)
-    'segment': (N,1),          # Semantic labels (optional, for training)
-    'instance': (N,1),         # Instance IDs (optional, for training)
-    ...                        # Extra attributes
-}
-```
-
-The data often needs to be re-scaled to new domains that lead to more efficient training
-(e.g., centering/scaling of coordinates to [-1,1]$^3$). This can be done within the Dataset class, or from a Transform. See the transform sections of configuration files for more details.
-
-### Packed Data Format
-
-This library works with packed data, where all batched quantities are in two dimensions instead of three, i.e. `(N, 3)` instead of `(B, N, 3)`. This is because point clouds are variable length, and getting to a 3 dimensional tensor would require padding. Instead of padding, there is an `offset` tensor, which is of length `B` and gives the indices in the packed tensors at which a point cloud ends and a new one starts.
-
-`Offset` is conceptually similar to the concept of `Batch` in PyG, and can be seen as the cumulative sum of a `lengths` tensor. A visual illustration of batch and offset is as follows:
-
-<p align="center">
-    <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/pointcept/assets/main/pointcept/offset_dark.png">
-    <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/pointcept/assets/main/pointcept/offset.png">
-    <img alt="pointcept" src="https://raw.githubusercontent.com/pointcept/assets/main/pointcept/offset.png" width="480">
-    </picture><br>
-</p>
-
 ## Configuration System
 
 Configurations are Python dictionary-based files located in the `configs/` directory. Each config file defines the model architecture, dataset settings, training hyperparameters, and different hooks to run during training (checkpoint saving, logging, evaluation).
@@ -219,6 +188,37 @@ Data saves to `~/.cache/pimm/pilarnet/v2` if `output_dir` is not provided. After
 
 PILArNet has two revisions. **v2** is recommended for new models (adds PID, momentum, and vertex information). **v1** is the original dataset from the PoLAr-MAE paper. Events differ between splits, so models trained on v1 should be evaluated on v1.
 
+## Data Format
+
+Point cloud data should be organized with the following structure:
+
+```python
+{
+    'coord': (N, 3),           # 3D hit positions [x, y, z]
+    'feat': (N, C),            # Hit features (charge, time, etc.)
+    'segment': (N,1),          # Semantic labels (optional, for training)
+    'instance': (N,1),         # Instance IDs (optional, for training)
+    ...                        # Extra attributes
+}
+```
+
+The data often needs to be re-scaled to new domains that lead to more efficient training
+(e.g., centering/scaling of coordinates to [-1,1]$^3$). This can be done within the Dataset class, or from a Transform. See the transform sections of configuration files for more details.
+
+### Packed Data Format
+
+This library works with packed data, where all batched quantities are in two dimensions instead of three, i.e. `(N, 3)` instead of `(B, N, 3)`. This is because point clouds are variable length, and getting to a 3 dimensional tensor would require padding. Instead of padding, there is an `offset` tensor, which is of length `B` and gives the indices in the packed tensors at which a point cloud ends and a new one starts.
+
+`Offset` is conceptually similar to the concept of `Batch` in PyG, and can be seen as the cumulative sum of a `lengths` tensor. A visual illustration of batch and offset is as follows:
+
+<p align="center">
+    <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/pointcept/assets/main/pointcept/offset_dark.png">
+    <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/pointcept/assets/main/pointcept/offset.png">
+    <img alt="pointcept" src="https://raw.githubusercontent.com/pointcept/assets/main/pointcept/offset.png" width="480">
+    </picture><br>
+</p>
+
 ### Docker / Apptainer
 
 Pre-built images are available on Docker Hub:
@@ -253,14 +253,6 @@ Models use `vXmY` naming (version X, mode Y). Different modes indicate small arc
 
 - **[PointGroup](https://github.com/dvlab-research/PointGroup)** — clustering-based instance segmentation.
 - **[Panda Detector](https://arxiv.org/abs/2512.01324)** — Mask2Former-style detection modified to take low energy deposits into account.
-
-## Data Format
-
-Point clouds use a **packed tensor format**: `(N, 3)` instead of `(B, N, 3)` to avoid padding variable-length clouds. An `offset` tensor of length `B` gives the cumulative sum of point counts per sample.
-
-```python
-{"coord": (N, 3), "feat": (N, C), "segment": (N, 1), "instance": (N, 1)}
-```
 
 ## Logging
 
