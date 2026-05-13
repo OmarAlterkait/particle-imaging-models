@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from typing import Dict, Literal, Optional, Tuple
 
 import torch
@@ -1249,5 +1250,640 @@ class Detector(PointModel):
             stuff_probs=forward_output["stuff_probs"],
             point_counts=forward_output["point_counts"],
             stuff_classes=self.decoder.stuff_classes,
+            **cfg,
+        )
+
+
+_DEFAULT_LABEL_SPECS = {
+    "particle": dict(
+        instance_key="instance_particle",
+        segment_key="segment_particle",
+        segment_fallback_key="segment_pid",
+        num_classes=6,
+        stuff_classes=[5],
+    ),
+    "interaction": dict(
+        instance_key="instance_interaction",
+        segment_key="segment_interaction",
+        num_classes=2,
+        stuff_classes=[0],
+    ),
+}
+
+
+class MultiLabelMaskQueryDecoder(MaskQueryDecoder):
+    """Mask-query decoder that batches queries for multiple instance targets."""
+
+    def __init__(
+        self,
+        label_specs,
+        full_in_channels,
+        hidden_channels,
+        num_heads,
+        depth=3,
+        mlp_ratio=4.0,
+        qkv_bias=False,
+        qk_scale=None,
+        attn_drop=0.0,
+        proj_drop=0.0,
+        drop_path=0.0,
+        layer_scale=None,
+        norm_layer=nn.LayerNorm,
+        act_layer=nn.GELU,
+        pre_norm=True,
+        enable_flash=True,
+        upcast_attention=True,
+        upcast_softmax=True,
+        pos_emb=True,
+        enc_mode=False,
+        query_type: Literal["learned"] = "learned",
+        mlp_point_proj=False,
+        supervise_attn_mask=True,
+    ):
+        self.labels = tuple(label_specs.keys())
+        self.label_specs = label_specs
+        query_slices = {}
+        query_start = 0
+        max_classes = 1
+        for label, spec in label_specs.items():
+            query_end = query_start + int(spec["num_queries"])
+            query_slices[label] = (query_start, query_end)
+            query_start = query_end
+            max_classes = max(max_classes, int(spec["num_classes"]))
+        self.query_slices = query_slices
+        self.total_queries = query_start
+
+        super().__init__(
+            full_in_channels=full_in_channels,
+            hidden_channels=hidden_channels,
+            num_heads=num_heads,
+            num_classes=max_classes,
+            num_queries=self.total_queries,
+            depth=depth,
+            mlp_ratio=mlp_ratio,
+            qkv_bias=qkv_bias,
+            qk_scale=qk_scale,
+            attn_drop=attn_drop,
+            proj_drop=proj_drop,
+            drop_path=drop_path,
+            layer_scale=layer_scale,
+            norm_layer=norm_layer,
+            act_layer=act_layer,
+            pre_norm=pre_norm,
+            enable_flash=enable_flash,
+            upcast_attention=upcast_attention,
+            upcast_softmax=upcast_softmax,
+            pos_emb=pos_emb,
+            enc_mode=enc_mode,
+            query_type=query_type,
+            mlp_point_proj=mlp_point_proj,
+            use_stuff_head=False,
+            stuff_classes=None,
+            supervise_attn_mask=supervise_attn_mask,
+            train_filter_use_gt=False,
+        )
+
+        # Label-specific heads below replace the superclass's single class head.
+        self.cls_pred = nn.Identity()
+        self.cls_pred_by_label = nn.ModuleDict()
+        self.stuff_head_by_label = nn.ModuleDict()
+        for label, spec in label_specs.items():
+            out_classes = int(spec["num_classes"]) + 1
+            self.cls_pred_by_label[label] = (
+                MLP(hidden_channels, hidden_channels, out_classes)
+                if mlp_point_proj
+                else nn.Linear(hidden_channels, out_classes)
+            )
+            if spec["use_stuff_head"]:
+                self.stuff_head_by_label[label] = nn.Sequential(
+                    nn.Linear(full_in_channels, hidden_channels),
+                    nn.ReLU(),
+                    nn.Linear(hidden_channels, 1),
+                )
+        self.apply(self._init_weights)
+
+    def _compute_label_predictions(
+        self,
+        label,
+        q_features,
+        mask_logits,
+        point,
+        query_valid,
+    ):
+        class_embed = self.cls_pred_by_label[label](q_features)
+
+        pred_masks = []
+        pred_cls = []
+        pred_logits = []
+
+        C = int(self.label_specs[label]["num_classes"])
+        label_q_start, label_q_end = self.query_slices[label]
+        total_q = self.total_queries
+
+        B = point.offset.shape[0]
+        counts = offset2bincount(point.offset).to(torch.long)
+        point_offsets = torch.cat([counts.new_zeros(1), point.offset])
+
+        for b in range(B):
+            P_b = counts[b].item()
+            q_start = b * total_q + label_q_start
+            q_end = b * total_q + label_q_end
+            p_start, p_end = point_offsets[b], point_offsets[b + 1]
+
+            mask_logits_b = mask_logits[q_start:q_end, p_start:p_end]
+            cls_b = class_embed[q_start:q_end]
+            valid_b = query_valid[q_start:q_end]
+
+            mask_logits_b = mask_logits_b[valid_b]
+            cls_b = cls_b[valid_b]
+
+            pred_masks.append(mask_logits_b)
+            pred_cls.append(cls_b)
+
+            if mask_logits_b.shape[0] > 0:
+                s = mask_logits_b.transpose(0, 1).unsqueeze(-1)
+                c = cls_b[:, :C].unsqueeze(0)
+                logits_b = torch.logsumexp(s + c, dim=1)
+            else:
+                logits_b = mask_logits.new_zeros((P_b, C))
+            pred_logits.append(logits_b)
+
+        pred_logits = (
+            torch.cat(pred_logits, dim=0)
+            if pred_logits
+            else mask_logits.new_zeros((0, C))
+        )
+
+        return {
+            "pred_masks": pred_masks,
+            "pred_logits": pred_cls,
+            "seg_logits": pred_logits,
+        }
+
+    def forward(self, point: Point):
+        point_full = self.up_cast(point)
+        decoder_point = point_full.copy()
+        decoder_point.feat = self.full_point_proj(point_full.feat)
+
+        return_aux = self.training
+        decoder_outputs = self._forward_decoder(decoder_point, return_aux=return_aux)
+        final_mask_logits = decoder_outputs["final_mask_logits"]
+        query_valid = decoder_outputs["query_valid"]
+        out_q = decoder_outputs["out_q"]
+
+        outputs_by_label = {}
+        for label in self.labels:
+            predictions = self._compute_label_predictions(
+                label, out_q, final_mask_logits, point_full, query_valid
+            )
+            if return_aux:
+                aux_outputs = []
+                for aux_q, aux_mask_logits in zip(
+                    decoder_outputs["aux_q_list"],
+                    decoder_outputs["aux_mask_logits_list"],
+                ):
+                    if aux_mask_logits is None:
+                        continue
+                    aux_outputs.append(
+                        self._compute_label_predictions(
+                            label, aux_q, aux_mask_logits, point_full, query_valid
+                        )
+                    )
+                if aux_outputs:
+                    predictions["aux_outputs"] = aux_outputs
+
+            if label in self.stuff_head_by_label:
+                stuff_logits = self.stuff_head_by_label[label](point_full.feat).squeeze(-1)
+                predictions["stuff_logits"] = stuff_logits
+                predictions["stuff_probs"] = stuff_logits.sigmoid()
+            outputs_by_label[label] = predictions
+
+        return outputs_by_label
+
+
+@MODELS.register_module(["detector-v3", "detector-v3m1"])
+class MultiLabelDetector(PointModel):
+    """Shared-backbone Panda detector with one batched query decoder for all labels."""
+
+    def __init__(
+        self,
+        full_in_channels,
+        hidden_channels,
+        num_heads,
+        labels=("particle",),
+        num_queries=32,
+        num_classes=None,
+        label_configs=None,
+        loss_weights=None,
+        eval_label=None,
+        backbone=None,
+        criteria=None,
+        criteria_by_label=None,
+        depth=3,
+        mlp_ratio=4.0,
+        qkv_bias=False,
+        qk_scale=None,
+        attn_drop=0.0,
+        proj_drop=0.0,
+        drop_path=0.0,
+        layer_scale=None,
+        norm_layer=nn.LayerNorm,
+        act_layer=nn.GELU,
+        pre_norm=True,
+        enable_flash=True,
+        upcast_attention=False,
+        upcast_softmax=False,
+        pos_emb=True,
+        attn_mask_anneal=False,
+        attn_mask_anneal_steps=10000,
+        attn_mask_warmup_steps=0,
+        attn_mask_progressive=False,
+        attn_mask_progressive_delay=0,
+        query_type: Literal["learned"] = "learned",
+        use_stuff_head=True,
+        stuff_classes=None,
+        supervise_attn_mask=True,
+        train_filter_use_gt: bool = False,
+        mlp_point_proj=False,
+        # postprocessing parameters for the primary/eval label
+        stuff_threshold=0.5,
+        mask_threshold=0.5,
+        conf_threshold=0.5,
+        nms_kernel="gaussian",
+        nms_sigma=2.0,
+        nms_pre=-1,
+        nms_max=-1,
+        min_points=2,
+        fill_uncovered=False,
+    ):
+        super().__init__()
+        if isinstance(labels, str):
+            labels = (labels,)
+        self.labels = tuple(labels)
+        if len(self.labels) == 0:
+            raise ValueError("labels must contain at least one label name")
+
+        self.label_specs = self._build_label_specs(
+            self.labels,
+            label_configs=label_configs,
+            num_queries=num_queries,
+            num_classes=num_classes,
+            stuff_classes=stuff_classes,
+            use_stuff_head=use_stuff_head,
+            loss_weights=loss_weights,
+        )
+        self.eval_label = eval_label or self.labels[-1]
+        if self.eval_label not in self.label_specs:
+            raise ValueError(
+                f"eval_label={self.eval_label!r} must be one of {self.labels}"
+            )
+
+        self.backbone = build_model(backbone)
+        self.criteria_by_label = {
+            label: build_criteria(self._criteria_cfg(label, criteria, criteria_by_label))
+            for label in self.labels
+        }
+
+        if train_filter_use_gt:
+            raise ValueError(
+                "detector-v3 batches queries across labels and does not support "
+                "per-label GT filtering inside cross-attention. Use stuff losses "
+                "and postprocess thresholds instead."
+            )
+
+        self.decoder = MultiLabelMaskQueryDecoder(
+            label_specs=self.label_specs,
+            full_in_channels=full_in_channels,
+            hidden_channels=hidden_channels,
+            num_heads=num_heads,
+            depth=depth,
+            mlp_ratio=mlp_ratio,
+            qkv_bias=qkv_bias,
+            qk_scale=qk_scale,
+            attn_drop=attn_drop,
+            proj_drop=proj_drop,
+            drop_path=drop_path,
+            layer_scale=layer_scale,
+            norm_layer=norm_layer,
+            act_layer=act_layer,
+            pre_norm=pre_norm,
+            enable_flash=enable_flash,
+            upcast_attention=upcast_attention,
+            upcast_softmax=upcast_softmax,
+            pos_emb=pos_emb,
+            enc_mode=False,
+            query_type=query_type,
+            mlp_point_proj=mlp_point_proj,
+            supervise_attn_mask=supervise_attn_mask,
+        )
+
+        if attn_mask_anneal:
+            self.decoder.set_attn_mask_anneal(
+                enable=True,
+                anneal_steps=attn_mask_anneal_steps,
+                warmup_steps=attn_mask_warmup_steps,
+                progressive=attn_mask_progressive,
+                progressive_delay=attn_mask_progressive_delay,
+            )
+
+        self.postprocess_cfg = dict(
+            stuff_threshold=stuff_threshold,
+            mask_threshold=mask_threshold,
+            conf_threshold=conf_threshold,
+            nms_kernel=nms_kernel,
+            nms_sigma=nms_sigma,
+            nms_pre=nms_pre,
+            nms_max=nms_max,
+            min_points=min_points,
+            fill_uncovered=fill_uncovered,
+        )
+
+    @staticmethod
+    def _select_value(value, labels, label, idx, default=None):
+        if value is None:
+            return default
+        if isinstance(value, dict):
+            return value.get(label, default)
+        if isinstance(value, (list, tuple)) and len(value) == len(labels):
+            return value[idx]
+        return value
+
+    @classmethod
+    def _select_stuff_classes(cls, value, labels, label, idx, default=None):
+        if value is None:
+            return default
+        if isinstance(value, dict):
+            return value.get(label, default)
+        if isinstance(value, (list, tuple)) and len(value) == len(labels):
+            if all(isinstance(v, (list, tuple, set)) for v in value):
+                return value[idx]
+        return value
+
+    @classmethod
+    def _build_label_specs(
+        cls,
+        labels,
+        label_configs=None,
+        num_queries=32,
+        num_classes=None,
+        stuff_classes=None,
+        use_stuff_head=True,
+        loss_weights=None,
+    ):
+        label_configs = label_configs or {}
+        specs = {}
+        for idx, label in enumerate(labels):
+            spec = deepcopy(_DEFAULT_LABEL_SPECS.get(label, {}))
+            spec.update(deepcopy(label_configs.get(label, {})))
+
+            queries = cls._select_value(num_queries, labels, label, idx, None)
+            classes = cls._select_value(num_classes, labels, label, idx, spec.get("num_classes"))
+            stuff = cls._select_stuff_classes(
+                stuff_classes, labels, label, idx, spec.get("stuff_classes", [])
+            )
+            task_use_stuff = cls._select_value(use_stuff_head, labels, label, idx, True)
+            loss_weight = cls._select_value(loss_weights, labels, label, idx, 1.0)
+
+            if queries is None:
+                raise ValueError(f"num_queries is required for label {label!r}")
+            if classes is None:
+                raise ValueError(
+                    f"num_classes is required for label {label!r}; provide "
+                    "num_classes or label_configs"
+                )
+            if "instance_key" not in spec:
+                spec["instance_key"] = f"instance_{label}"
+            if "segment_key" not in spec:
+                spec["segment_key"] = f"segment_{label}"
+
+            spec["num_queries"] = int(queries)
+            spec["num_classes"] = int(classes)
+            spec["stuff_classes"] = list(stuff or [])
+            spec["use_stuff_head"] = bool(task_use_stuff)
+            spec["loss_weight"] = float(loss_weight)
+            specs[label] = spec
+        return specs
+
+    @staticmethod
+    def _criteria_cfg(label, criteria, criteria_by_label):
+        if criteria_by_label is not None and label in criteria_by_label:
+            return deepcopy(criteria_by_label[label])
+        return deepcopy(criteria)
+
+    def update_anneal_step(self, step: int):
+        self.decoder.update_anneal_step(step)
+
+    def up_cast(self, point: Point) -> Point:
+        enc_mode = getattr(self.backbone, "enc_mode", True)
+        if not enc_mode:
+            return point
+        while "pooling_parent" in point.keys():
+            assert "pooling_inverse" in point.keys()
+            parent = point.pop("pooling_parent")
+            inverse = point.pop("pooling_inverse")
+            parent.feat = torch.cat([parent.feat, point.feat[inverse]], dim=-1)
+            point = parent
+        return point
+
+    def _segment_key(self, input_dict: Dict, spec: Dict) -> str:
+        segment_key = spec["segment_key"]
+        if segment_key in input_dict:
+            return segment_key
+        fallback = spec.get("segment_fallback_key")
+        if fallback is not None and fallback in input_dict:
+            return fallback
+        return segment_key
+
+    def _task_input(self, input_dict: Dict, label: str) -> Dict:
+        spec = self.label_specs[label]
+        instance_key = spec["instance_key"]
+        segment_key = self._segment_key(input_dict, spec)
+        if instance_key not in input_dict:
+            raise KeyError(f"Missing instance labels for {label!r}: {instance_key}")
+        if segment_key not in input_dict:
+            raise KeyError(f"Missing semantic labels for {label!r}: {segment_key}")
+        task_input = dict(input_dict)
+        task_input["instance"] = input_dict[instance_key]
+        task_input["segment"] = input_dict[segment_key]
+        return task_input
+
+    @staticmethod
+    def _compute_stuff_loss(
+        decoder: MultiLabelMaskQueryDecoder,
+        label: str,
+        stuff_logits: torch.Tensor,
+        task_input: Dict,
+    ) -> torch.Tensor:
+        segment = task_input["segment"]
+        if isinstance(segment, torch.Tensor) and segment.dim() == 2 and segment.shape[1] == 1:
+            segment = segment.squeeze(1)
+
+        stuff_target = torch.zeros_like(stuff_logits)
+        for stuff_class in decoder.label_specs[label]["stuff_classes"]:
+            stuff_target[segment == int(stuff_class)] = 1.0
+        return F.binary_cross_entropy_with_logits(
+            stuff_logits, stuff_target, reduction="mean"
+        )
+
+    def _sync_scalar_outputs(self, return_dict: Dict) -> Dict:
+        if get_world_size() > 1:
+            for key, value in return_dict.items():
+                if isinstance(value, torch.Tensor) and value.ndim == 0:
+                    value_sync = value.clone()
+                    dist.nn.all_reduce(value_sync, op=dist.ReduceOp.SUM)
+                    value_sync.div_(get_world_size())
+                    return_dict[key] = value_sync
+        return return_dict
+
+    def forward(self, input_dict, return_point=False):
+        point = Point(input_dict)
+        point = self.backbone(point)
+        point_full = self.up_cast(point)
+        outputs_by_label = self.decoder(Point(point_full.copy()))
+
+        loss = None
+        return_dict = {}
+        emit_predictions = not self.training
+
+        for label in self.labels:
+            task_input = None
+            spec = self.label_specs[label]
+            segment_key = self._segment_key(input_dict, spec)
+            has_targets = spec["instance_key"] in input_dict and segment_key in input_dict
+            if has_targets or self.training:
+                task_input = self._task_input(input_dict, label)
+            outputs = outputs_by_label[label]
+            outputs_by_label[label] = outputs
+
+            if emit_predictions:
+                return_dict[f"{label}_seg_logits"] = outputs["seg_logits"]
+                return_dict[f"{label}_pred_logits"] = outputs.get("pred_logits")
+                return_dict[f"{label}_pred_masks"] = outputs.get("pred_masks")
+                if "stuff_probs" in outputs:
+                    return_dict[f"{label}_stuff_probs"] = outputs["stuff_probs"]
+
+            if task_input is not None:
+                loss_result = self.criteria_by_label[label](outputs, task_input)
+                if isinstance(loss_result, tuple):
+                    task_loss, components = loss_result
+                else:
+                    task_loss, components = loss_result, {}
+                task_loss = task_loss * self.label_specs[label]["loss_weight"]
+                loss = task_loss if loss is None else loss + task_loss
+                return_dict[f"{label}_loss"] = task_loss
+                for key, value in components.items():
+                    return_dict[f"{label}_{key}"] = value
+
+                if (
+                    self.label_specs[label]["use_stuff_head"]
+                    and "stuff_logits" in outputs
+                ):
+                    stuff_loss = self._compute_stuff_loss(
+                        self.decoder, label, outputs["stuff_logits"], task_input
+                    )
+                    loss = loss + stuff_loss
+                    return_dict[f"{label}_stuff_loss"] = stuff_loss
+
+        if emit_predictions or return_point:
+            primary_outputs = outputs_by_label[self.eval_label]
+            primary_spec = self.label_specs[self.eval_label]
+            point_full.outputs = primary_outputs
+            point_full.outputs_by_label = outputs_by_label
+            point_full.pred_cls = primary_outputs["pred_logits"]
+            point_full.pred_masks = primary_outputs["pred_masks"]
+            point_full.pred_logits = primary_outputs["seg_logits"]
+            if primary_spec["instance_key"] in input_dict:
+                point_full.instance = input_dict[primary_spec["instance_key"]]
+            primary_segment_key = self._segment_key(input_dict, primary_spec)
+            if primary_segment_key in input_dict:
+                point_full.segment = input_dict[primary_segment_key]
+
+            if emit_predictions:
+                return_dict["outputs_by_label"] = outputs_by_label
+                return_dict["seg_logits_by_label"] = {
+                    label: outputs["seg_logits"] for label, outputs in outputs_by_label.items()
+                }
+                return_dict["pred_logits_by_label"] = {
+                    label: outputs["pred_logits"] for label, outputs in outputs_by_label.items()
+                }
+                return_dict["pred_masks_by_label"] = {
+                    label: outputs["pred_masks"] for label, outputs in outputs_by_label.items()
+                }
+                return_dict["seg_logits"] = primary_outputs["seg_logits"]
+                return_dict["pred_logits"] = primary_outputs.get("pred_logits")
+                return_dict["pred_masks"] = primary_outputs.get("pred_masks")
+                return_dict["stuff_probs"] = primary_outputs.get("stuff_probs")
+                return_dict["point_counts"] = offset2bincount(point_full.offset)
+
+        if loss is not None:
+            return_dict["loss"] = loss
+        if return_point:
+            return_dict["point"] = point_full
+        return self._sync_scalar_outputs(return_dict)
+
+    def postprocess(
+        self,
+        forward_output: dict,
+        label: str = None,
+        stuff_threshold: float = None,
+        mask_threshold: float = None,
+        conf_threshold: float = None,
+        nms_kernel: str = None,
+        nms_sigma: float = None,
+        nms_pre: int = None,
+        nms_max: int = None,
+        min_points: int = None,
+        background_class_label: int = None,
+        fill_uncovered: bool = None,
+    ):
+        label = label or self.eval_label
+        cfg = self.postprocess_cfg.copy()
+        overrides = {
+            "stuff_threshold": stuff_threshold,
+            "mask_threshold": mask_threshold,
+            "conf_threshold": conf_threshold,
+            "nms_kernel": nms_kernel,
+            "nms_sigma": nms_sigma,
+            "nms_pre": nms_pre,
+            "nms_max": nms_max,
+            "min_points": min_points,
+            "background_class_label": background_class_label,
+            "fill_uncovered": fill_uncovered,
+        }
+        for key, value in overrides.items():
+            if value is not None:
+                cfg[key] = value
+
+        if "outputs_by_label" in forward_output:
+            task_output = forward_output["outputs_by_label"][label]
+            pred_masks = task_output["pred_masks"]
+            pred_logits = task_output["pred_logits"]
+            stuff_probs = task_output.get("stuff_probs")
+            point_counts = forward_output.get("point_counts")
+        elif (
+            "pred_masks_by_label" in forward_output
+            and label in forward_output["pred_masks_by_label"]
+        ):
+            pred_masks = forward_output["pred_masks_by_label"][label]
+            pred_logits = forward_output["pred_logits_by_label"][label]
+            stuff_probs = None
+            if "stuff_probs_by_label" in forward_output:
+                stuff_probs = forward_output["stuff_probs_by_label"].get(label)
+            point_counts = forward_output.get("point_counts")
+        else:
+            pred_masks = forward_output["pred_masks"]
+            pred_logits = forward_output["pred_logits"]
+            stuff_probs = forward_output.get("stuff_probs")
+            point_counts = forward_output.get("point_counts")
+
+        if point_counts is None:
+            point_counts = forward_output.get(f"{label}_point_counts")
+
+        return postprocess_batch(
+            pred_masks=pred_masks,
+            pred_logits=pred_logits,
+            stuff_probs=stuff_probs,
+            point_counts=point_counts,
+            stuff_classes=self.label_specs[label]["stuff_classes"],
             **cfg,
         )

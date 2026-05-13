@@ -103,6 +103,41 @@ sbatch my_job.sh
 
 The key rule: `--ntasks-per-node` must equal the number of GPUs per node. The training script handles distributed setup automatically via SLURM environment variables.
 
+## HPC Launching
+
+For routine Slurm runs, prefer the site-aware launcher over copying and editing
+one-off Slurm scripts. It composes common defaults, a site profile, and
+optionally a run recipe into the final Slurm job.
+
+If you just made a normal Python config and want to submit it with site
+defaults:
+
+```bash
+scripts/launch.py submit --site s3df \
+  --config-dir panda/pretrain_geometry_combos \
+  --config pretrain-sonata-v1m1-pilarnet-e050-head512-tail-wd20
+```
+
+For a saved run recipe with launch-time state such as checkpoint weights,
+resource overrides, or W&B naming:
+
+```bash
+scripts/launch.py submit --site s3df launch/runs/e050_tail.yaml
+scripts/launch.py submit --site nersc launch/runs/e050_tail.yaml
+```
+
+Always dry-run first when changing sites or resources:
+
+```bash
+scripts/launch.py dry-run --site s3df launch/runs/e050_tail.yaml
+```
+
+`--site s3df` submits through `ssh iana`, activates the
+`pointcept-torch2.5.0-cu12.4` mamba environment, and runs `sbatch` from the
+shared S3DF repo path. `--site nersc` currently assumes the launcher is run on a
+NERSC login node and renders a Shifter/Perlmutter job. See
+`launch/README.md` for the YAML layer details and override syntax.
+
 ## Training & Testing
 
 The entry point is `scripts/train.sh`:

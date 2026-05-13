@@ -239,7 +239,6 @@ class PointSequential(PointModule):
 
     def forward(self, input):
         for k, module in self._modules.items():
-            torch.cuda.synchronize()
             # Point module
             if isinstance(module, PointModule):
                 input = module(input)
@@ -271,8 +270,6 @@ class PointSequential(PointModule):
                         input = input.replace_feature(module(input.features))
                 else:
                     input = module(input)
-
-            torch.cuda.synchronize()
         return input
 
 

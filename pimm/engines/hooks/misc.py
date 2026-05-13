@@ -1430,6 +1430,12 @@ class FeatureStdMonitor(HookBase):
                 self._feature_stats_hook('teacher')
             )
             self.hook_handles.append(hook)
+            if 'representation_fusion' in sonata_module.teacher:
+                self.trainer.logger.info("Registering feature monitor on teacher representation_fusion")
+                hook = sonata_module.teacher['representation_fusion'].register_forward_hook(
+                    self._feature_stats_hook('teacher/representation_fusion')
+                )
+                self.hook_handles.append(hook)
         
         # Register hooks on student backbone
         if self.monitor_student and hasattr(sonata_module, 'student') and 'backbone' in sonata_module.student:
@@ -1438,6 +1444,12 @@ class FeatureStdMonitor(HookBase):
                 self._feature_stats_hook('student')
             )
             self.hook_handles.append(hook)
+            if 'representation_fusion' in sonata_module.student:
+                self.trainer.logger.info("Registering feature monitor on student representation_fusion")
+                hook = sonata_module.student['representation_fusion'].register_forward_hook(
+                    self._feature_stats_hook('student/representation_fusion')
+                )
+                self.hook_handles.append(hook)
     
     def _feature_stats_hook(self, module_name):
         """Create a forward hook function that captures feature statistics."""

@@ -27,6 +27,27 @@ from typing import Optional
 
 TRANSFORMS = Registry("transforms")
 
+
+def _valid_v3_vertex_mask(data_dict):
+    vertex = data_dict.get("vertex")
+    if data_dict.get("revision") != "v3" or vertex is None:
+        return None
+    return ~(vertex == -1).all(axis=1)
+
+
+def _apply_to_v3_vertex(data_dict, transform):
+    mask = _valid_v3_vertex_mask(data_dict)
+    if mask is None or not mask.any():
+        return
+    data_dict["vertex"][mask] = transform(data_dict["vertex"][mask])
+
+
+def _translate_axis(points, dim, value):
+    points = points.copy()
+    points[:, dim] += value
+    return points
+
+
 # Anchor mining defaults (can be overridden from config)
 try:
     from .anchors import compute_anchors, ANCHOR_DEFAULT_CFG
@@ -69,6 +90,12 @@ def index_operator(data_dict, index, duplicate=False):
             "phi",
             "segment_interaction",
         ]
+    if data_dict.get("revision") == "v3":
+        if not isinstance(data_dict["index_valid_keys"], list):
+            data_dict["index_valid_keys"] = list(data_dict["index_valid_keys"])
+        for key in ("vertex", "is_primary"):
+            if key not in data_dict["index_valid_keys"]:
+                data_dict["index_valid_keys"].append(key)
     if not duplicate:
         for key in data_dict["index_valid_keys"]:
             if key in data_dict:
@@ -189,16 +216,17 @@ class NormalizeCoord(object):
             # modified from pointnet2
             if self.center is None:
                 centroid = np.mean(data_dict["coord"], axis=0)
-                data_dict["coord"] -= centroid
             else:
                 centroid = np.array(self.center)
-                data_dict["coord"] -= centroid
+            data_dict["coord"] -= centroid
 
             if self.scale is None:
                 m = np.max(np.sqrt(np.sum(data_dict["coord"] ** 2, axis=1)))
-                data_dict["coord"] = data_dict["coord"] / m
+                scale = m
             else:
-                data_dict["coord"] = data_dict["coord"] / self.scale
+                scale = self.scale
+            data_dict["coord"] = data_dict["coord"] / scale
+            _apply_to_v3_vertex(data_dict, lambda vertex: (vertex - centroid) / scale)
         return data_dict
 
 
@@ -255,6 +283,7 @@ class PositiveShift(object):
         if "coord" in data_dict.keys():
             coord_min = np.min(data_dict["coord"], 0)
             data_dict["coord"] -= coord_min
+            _apply_to_v3_vertex(data_dict, lambda vertex: vertex - coord_min)
         return data_dict
 
 
@@ -272,15 +301,27 @@ class CenterShift(object):
                 if axis == "x":
                     x_min, y_min, z_min = data_dict["coord"].min(axis=0)
                     x_max, y_max, z_max = data_dict["coord"].max(axis=0)
-                    data_dict["coord"][:, 0] -= (x_min + x_max) / 2
+                    shift = (x_min + x_max) / 2
+                    data_dict["coord"][:, 0] -= shift
+                    _apply_to_v3_vertex(
+                        data_dict, lambda vertex, shift=shift: _translate_axis(vertex, 0, -shift)
+                    )
                 elif axis == "y":
                     x_min, y_min, z_min = data_dict["coord"].min(axis=0)
                     x_max, y_max, z_max = data_dict["coord"].max(axis=0)
-                    data_dict["coord"][:, 1] -= (y_min + y_max) / 2
+                    shift = (y_min + y_max) / 2
+                    data_dict["coord"][:, 1] -= shift
+                    _apply_to_v3_vertex(
+                        data_dict, lambda vertex, shift=shift: _translate_axis(vertex, 1, -shift)
+                    )
                 elif axis == "z":
                     x_min, y_min, z_min = data_dict["coord"].min(axis=0)
                     x_max, y_max, z_max = data_dict["coord"].max(axis=0)
-                    data_dict["coord"][:, 2] -= (z_min + z_max) / 2
+                    shift = (z_min + z_max) / 2
+                    data_dict["coord"][:, 2] -= shift
+                    _apply_to_v3_vertex(
+                        data_dict, lambda vertex, shift=shift: _translate_axis(vertex, 2, -shift)
+                    )
         return data_dict
 
 @TRANSFORMS.register_module()
@@ -337,6 +378,12 @@ class ConditionalRandomTransform(object):
                 if t_low <= t_high:
                     translation = np.random.uniform(t_low, t_high)
                     coord[:, dim] += translation
+                    _apply_to_v3_vertex(
+                        data_dict,
+                        lambda vertex, dim=dim, translation=translation: _translate_axis(
+                            vertex, dim, translation
+                        ),
+                    )
 
         data_dict["coord"] = coord
         return data_dict
@@ -351,7 +398,9 @@ class RandomShift(object):
             shift_x = np.random.uniform(self.shift[0][0], self.shift[0][1])
             shift_y = np.random.uniform(self.shift[1][0], self.shift[1][1])
             shift_z = np.random.uniform(self.shift[2][0], self.shift[2][1])
-            data_dict["coord"] += [shift_x, shift_y, shift_z]
+            shift = np.array([shift_x, shift_y, shift_z])
+            data_dict["coord"] += shift
+            _apply_to_v3_vertex(data_dict, lambda vertex: vertex + shift)
         return data_dict
 
 
@@ -422,9 +471,14 @@ class RandomRotate(object):
                 center = [(x_min + x_max) / 2, (y_min + y_max) / 2, (z_min + z_max) / 2]
             else:
                 center = self.center
+            center = np.asarray(center)
             data_dict["coord"] -= center
             data_dict["coord"] = np.dot(data_dict["coord"], np.transpose(rot_t))
             data_dict["coord"] += center
+            _apply_to_v3_vertex(
+                data_dict,
+                lambda vertex: np.dot(vertex - center, np.transpose(rot_t)) + center,
+            )
         if "normal" in data_dict.keys():
             data_dict["normal"] = np.dot(data_dict["normal"], np.transpose(rot_t))
         return data_dict
@@ -461,9 +515,14 @@ class RandomRotateTargetAngle(object):
                 center = [(x_min + x_max) / 2, (y_min + y_max) / 2, (z_min + z_max) / 2]
             else:
                 center = self.center
+            center = np.asarray(center)
             data_dict["coord"] -= center
             data_dict["coord"] = np.dot(data_dict["coord"], np.transpose(rot_t))
             data_dict["coord"] += center
+            _apply_to_v3_vertex(
+                data_dict,
+                lambda vertex: np.dot(vertex - center, np.transpose(rot_t)) + center,
+            )
         if "normal" in data_dict.keys():
             data_dict["normal"] = np.dot(data_dict["normal"], np.transpose(rot_t))
         return data_dict
@@ -481,6 +540,7 @@ class RandomScale(object):
                 self.scale[0], self.scale[1], 3 if self.anisotropic else 1
             )
             data_dict["coord"] *= scale
+            _apply_to_v3_vertex(data_dict, lambda vertex: vertex * scale)
         return data_dict
 
 
@@ -496,14 +556,32 @@ class RandomFlip(object):
         for axis in self.axes:
             if axis == "x" and random.random() < self.p:
                 data_dict["coord"][:, 0] = -data_dict["coord"][:, 0]
+                _apply_to_v3_vertex(
+                    data_dict,
+                    lambda vertex: np.column_stack(
+                        (-vertex[:, 0], vertex[:, 1], vertex[:, 2])
+                    ),
+                )
                 if "normal" in data_dict.keys():
                     data_dict["normal"][:, 0] = -data_dict["normal"][:, 0]
             elif axis == "y" and random.random() < self.p:
                 data_dict["coord"][:, 1] = -data_dict["coord"][:, 1]
+                _apply_to_v3_vertex(
+                    data_dict,
+                    lambda vertex: np.column_stack(
+                        (vertex[:, 0], -vertex[:, 1], vertex[:, 2])
+                    ),
+                )
                 if "normal" in data_dict.keys():
                     data_dict["normal"][:, 1] = -data_dict["normal"][:, 1]
             elif axis == "z" and random.random() < self.p:
                 data_dict["coord"][:, 2] = -data_dict["coord"][:, 2]
+                _apply_to_v3_vertex(
+                    data_dict,
+                    lambda vertex: np.column_stack(
+                        (vertex[:, 0], vertex[:, 1], -vertex[:, 2])
+                    ),
+                )
                 if "normal" in data_dict.keys():
                     data_dict["normal"][:, 2] = -data_dict["normal"][:, 2]
         return data_dict
@@ -1498,6 +1576,152 @@ class MultiViewGenerator(object):
             cover_mask[np.isin(major_view["index"], local_view["index"])] = True
 
         # augmentation and concat
+        view_dict = {}
+        for global_view in global_views:
+            global_view.pop("index")
+            global_view = self.global_transform(global_view)
+            for key in self.view_keys:
+                if f"global_{key}" in view_dict.keys():
+                    view_dict[f"global_{key}"].append(global_view[key])
+                else:
+                    view_dict[f"global_{key}"] = [global_view[key]]
+        view_dict["global_offset"] = np.cumsum(
+            [data.shape[0] for data in view_dict["global_coord"]]
+        )
+        for local_view in local_views:
+            local_view.pop("index")
+            local_view = self.local_transform(local_view)
+            for key in self.view_keys:
+                if f"local_{key}" in view_dict.keys():
+                    view_dict[f"local_{key}"].append(local_view[key])
+                else:
+                    view_dict[f"local_{key}"] = [local_view[key]]
+        view_dict["local_offset"] = np.cumsum(
+            [data.shape[0] for data in view_dict["local_coord"]]
+        )
+        for key in view_dict.keys():
+            if "offset" not in key:
+                view_dict[key] = np.concatenate(view_dict[key], axis=0)
+        data_dict.update(view_dict)
+        return data_dict
+
+
+@TRANSFORMS.register_module()
+class MixedScaleGeometryMultiViewGenerator(MultiViewGenerator):
+    """Multi-view generator with normal coarse locals plus fine local crops.
+
+    Fine local crop centers can be sampled uniformly or from a simple local PCA
+    directional-complexity score. This keeps the SSL objective unchanged while
+    changing which local regions feed the local-global loss.
+    """
+
+    def __init__(
+        self,
+        fine_local_view_num=3,
+        fine_local_view_scale=(0.01, 0.04),
+        fine_center_mode="geometry",
+        fine_center_top_frac=0.05,
+        fine_center_k=24,
+        **kwargs,
+    ):
+        super().__init__(**kwargs)
+        assert 0 <= fine_local_view_num <= self.local_view_num
+        assert fine_center_mode in ("geometry", "random")
+        self.fine_local_view_num = int(fine_local_view_num)
+        self.fine_local_view_scale = fine_local_view_scale
+        self.fine_center_mode = fine_center_mode
+        self.fine_center_top_frac = float(fine_center_top_frac)
+        self.fine_center_k = int(fine_center_k)
+
+    @staticmethod
+    def _directional_complexity(coord, k):
+        coord = np.asarray(coord, dtype=np.float32)
+        n = coord.shape[0]
+        if n < 4:
+            return np.zeros(n, dtype=np.float32)
+        k_eff = min(int(k) + 1, n)
+        tree = cKDTree(coord)
+        try:
+            _, idx = tree.query(coord, k=k_eff, workers=-1)
+        except TypeError:
+            _, idx = tree.query(coord, k=k_eff)
+        if idx.ndim == 1:
+            idx = idx[:, None]
+        idx = idx[:, 1:]
+        if idx.shape[1] < 3:
+            return np.zeros(n, dtype=np.float32)
+        neigh = coord[idx]
+        centered = neigh - neigh.mean(axis=1, keepdims=True)
+        cov = np.einsum("nki,nkj->nij", centered, centered) / centered.shape[1]
+        eig = np.maximum(np.linalg.eigvalsh(cov), 0.0)
+        return (eig[:, 1] / (eig[:, 2] + 1.0e-8)).astype(np.float32)
+
+    def _geometry_pool(self, coord, major_index):
+        if self.fine_center_mode == "random":
+            return major_index
+        score = self._directional_complexity(coord, self.fine_center_k)
+        n_top = max(1, int(np.ceil(score.shape[0] * self.fine_center_top_frac)))
+        top_index = np.argpartition(score, -n_top)[-n_top:]
+        in_major = np.zeros(coord.shape[0], dtype=bool)
+        in_major[major_index] = True
+        pool = top_index[in_major[top_index]]
+        return pool if pool.shape[0] > 0 else major_index
+
+    def __call__(self, data_dict):
+        coord = data_dict["coord"]
+        point = self.global_shared_transform(copy.deepcopy(data_dict))
+        z_min = coord[:, 2].min()
+        z_max = coord[:, 2].max()
+        z_min_ = z_min + (z_max - z_min) * self.center_height_scale[0]
+        z_max_ = z_min + (z_max - z_min) * self.center_height_scale[1]
+        center_mask = np.logical_and(coord[:, 2] >= z_min_, coord[:, 2] <= z_max_)
+
+        major_center = coord[np.random.choice(np.where(center_mask)[0])]
+        major_view = self.get_view(point, major_center, self.global_view_scale)
+        major_coord = major_view["coord"]
+
+        if not self.shared_global_view:
+            global_views = [
+                self.get_view(
+                    point=point,
+                    center=major_coord[np.random.randint(major_coord.shape[0])],
+                    scale=self.global_view_scale,
+                )
+                for _ in range(self.global_view_num - 1)
+            ]
+        else:
+            global_views = [
+                {key: value.copy() for key, value in major_view.items()}
+                for _ in range(self.global_view_num - 1)
+            ]
+        global_views = [major_view] + global_views
+
+        cover_mask = np.zeros_like(major_view["index"], dtype=bool)
+        local_views = []
+        fine_pool = self._geometry_pool(coord, major_view["index"])
+
+        for _ in range(self.fine_local_view_num):
+            center = coord[fine_pool[np.random.randint(fine_pool.shape[0])]]
+            local_views.append(
+                self.get_view(
+                    point=data_dict,
+                    center=center,
+                    scale=self.fine_local_view_scale,
+                )
+            )
+
+        num_random_locals = self.local_view_num - self.fine_local_view_num
+        for _ in range(num_random_locals):
+            if sum(~cover_mask) == 0:
+                cover_mask[:] = False
+            local_view = self.get_view(
+                point=data_dict,
+                center=major_coord[np.random.choice(np.where(~cover_mask)[0])],
+                scale=self.local_view_scale,
+            )
+            local_views.append(local_view)
+            cover_mask[np.isin(major_view["index"], local_view["index"])] = True
+
         view_dict = {}
         for global_view in global_views:
             global_view.pop("index")

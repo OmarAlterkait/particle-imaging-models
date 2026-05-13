@@ -1,0 +1,36 @@
+site: nersc
+
+paths:
+  repo_root: /global/homes/y/youngsam/sw/particle-imaging-models
+  exp_root: /pscratch/sd/y/youngsam/pimm/exp
+  data_root: /global/homes/y/youngsam/data/pilarnet/v1
+
+resources:
+  cpus_per_task: 32
+  mem: 192G
+
+slurm:
+  account: m5238_g
+  qos: regular
+  constraint: gpu
+  gpu_directive: gpus-per-node
+  image: youngsm/pimm:v1.0.0-pytorch2.5.0-cuda12.4-cudnn9-devel
+  module: gpu,nccl-plugin
+
+container:
+  runtime: shifter
+  image: youngsm/pimm:v1.0.0-pytorch2.5.0-cuda12.4-cudnn9-devel
+  module: gpu,nccl-plugin
+  unset_env:
+    - LD_LIBRARY_PATH
+    - LD_PRELOAD
+  setup:
+    - export LD_LIBRARY_PATH=/opt/hdf5/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}
+
+env:
+  PYTHONFAULTHANDLER: "1"
+  NCCL_SOCKET_IFNAME: "^docker0,lo"
+  NCCL_NET_GDR_LEVEL: PHB
+  HDF5_USE_FILE_LOCKING: "FALSE"
+  PILARNET_DATA_ROOT_V1: "{data_root}"
+

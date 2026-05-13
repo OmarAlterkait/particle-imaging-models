@@ -1,0 +1,20 @@
+resources:
+  nodes: 1
+  gpus_per_node: 4
+  tasks_per_node: 4
+  cpus_per_task: 12
+  time: "24:00:00"
+
+slurm:
+  output: "slurm_logs/%j_%n_%x.txt"
+  gpu_directive: gres
+
+run:
+  timestamp: true
+  wandb_name: null
+
+train:
+  resume: false
+  dev_mode: false
+  options: {}
+

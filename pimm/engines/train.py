@@ -294,7 +294,8 @@ class Trainer(TrainerBase):
             writer = WandbSummaryWriter(
                 project=self.cfg.get('wandb_project', 'pimm'),
                 name=self.cfg.get('wandb_run_name', os.path.basename(self.cfg.save_path)),
-                config=self.cfg
+                config=self.cfg,
+                step_offset=self.cfg.get('log_step_offset', 0),
             ) if comm.is_main_process() else None
             self.logger.info(f"Weights & Biases writer initialized with project: {self.cfg.get('wandb_project', 'pimm')}")
         else:

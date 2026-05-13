@@ -1,0 +1,28 @@
+run:
+  name: E050-Head512TailWD20-pretrain-sonata-v1m1-pilarnet-e050-head512-tail-wd20-100000-100ep-lr3e-5-wd0.2-ema0.99995-bs48-seed0
+
+slurm:
+  job_name: panda-h512tail-e050
+
+resources:
+  time: "72:00:00"
+
+train:
+  config_dir: panda/pretrain_geometry_combos
+  config: pretrain-sonata-v1m1-pilarnet-e050-head512-tail-wd20
+  weight: "{exp_root}/panda/pretrain_geometry_combos/E047-Head512100-pretrain-sonata-v1m1-pilarnet-e040-head512-sharpt45-100000-100ep-bs48-seed0-2026-05-11_10-15-32/model/model_best.pth"
+  options:
+    data.train.max_len: 100000
+    epoch: 100
+    batch_size: 48
+    batch_size_val: 32
+    num_worker: 24
+    seed: 0
+    base_lr: 3e-5
+    base_wd: 0.2
+    final_wd: 0.2
+    optimizer.lr: 3e-5
+    optimizer.weight_decay: 0.2
+    scheduler.eta_min: 3e-5
+    model.momentum_base: 0.99995
+    model.momentum_final: 0.99995
