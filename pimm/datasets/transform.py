@@ -28,15 +28,19 @@ from typing import Optional
 TRANSFORMS = Registry("transforms")
 
 
-def _valid_v3_vertex_mask(data_dict):
+def _valid_vertex_mask(data_dict):
     vertex = data_dict.get("vertex")
-    if data_dict.get("revision") != "v3" or vertex is None:
+    if vertex is None:
         return None
+    if vertex.ndim != 2 or vertex.shape[1] != 3:
+        return None
+    # v3 uses (-1, -1, -1) as a missing-vertex sentinel. v2 vertices are
+    # corrected labels and should transform with the coordinates.
     return ~(vertex == -1).all(axis=1)
 
 
 def _apply_to_v3_vertex(data_dict, transform):
-    mask = _valid_v3_vertex_mask(data_dict)
+    mask = _valid_vertex_mask(data_dict)
     if mask is None or not mask.any():
         return
     data_dict["vertex"][mask] = transform(data_dict["vertex"][mask])
@@ -74,6 +78,7 @@ def index_operator(data_dict, index, duplicate=False):
             "instance_particle",
             "instance_interaction",
             "momentum",
+            "vertex",
             # JAXTPCDataset keys (JAXTPC)
             "track_ids",
             "group_ids",
@@ -93,7 +98,7 @@ def index_operator(data_dict, index, duplicate=False):
     if data_dict.get("revision") == "v3":
         if not isinstance(data_dict["index_valid_keys"], list):
             data_dict["index_valid_keys"] = list(data_dict["index_valid_keys"])
-        for key in ("vertex", "is_primary"):
+        for key in ("is_primary",):
             if key not in data_dict["index_valid_keys"]:
                 data_dict["index_valid_keys"].append(key)
     if not duplicate:
@@ -232,16 +237,19 @@ class NormalizeCoord(object):
 
 @TRANSFORMS.register_module()
 class LogTransform(object):
-    def __init__(self, min_val=1.0e-2, max_val=20.0, log=True, keys=("energy",)):
+    def __init__(self, min_val=1.0e-2, max_val=20.0, log=True, keys=("energy",), clip=False):
         self.min_val = min_val
         self.max_val = max_val
         self.log = log
+        self.clip = clip
         if not isinstance(keys, tuple):
             keys = (keys,)
         self.keys = keys
 
     def log_transform(self, x):
         """Transform energy to logarithmic scale on [-1,1]"""
+        if self.clip:
+            x = np.clip(x, 0.0, self.max_val)
         # [emin, emax] -> [-1,1]
         y0 = np.log10(self.min_val)
         y1 = np.log10(self.max_val + self.min_val)
@@ -249,6 +257,8 @@ class LogTransform(object):
 
     def linear_transform(self, x):
         """Transform energy to linear scale on [-1,1]"""
+        if self.clip:
+            x = np.clip(x, self.min_val, self.max_val)
         return 2 * (x - self.min_val) / (self.max_val - self.min_val) - 1
 
     def __call__(self, data_dict):
@@ -259,6 +269,50 @@ class LogTransform(object):
                     if self.log
                     else self.linear_transform(data_dict[k])
                 )
+            else:
+                raise ValueError(f"Key {k} not found in data_dict")
+        return data_dict
+
+
+@TRANSFORMS.register_module()
+class RelativeLogNormalize(object):
+    def __init__(
+        self,
+        keys=("time",),
+        scale=50.0,
+        max_val=4000.0,
+        out_min=-1.0,
+        out_max=1.0,
+    ):
+        self.scale = float(scale)
+        self.max_val = float(max_val)
+        self.out_min = float(out_min)
+        self.out_max = float(out_max)
+        if self.scale <= 0:
+            raise ValueError("scale must be positive")
+        if self.max_val <= 0:
+            raise ValueError("max_val must be positive")
+        if self.out_max <= self.out_min:
+            raise ValueError("out_max must be greater than out_min")
+        if not isinstance(keys, tuple):
+            keys = (keys,)
+        self.keys = keys
+        self.denom = np.log1p(self.max_val / self.scale)
+
+    def relative_log_transform(self, x):
+        x = np.asarray(x, dtype=np.float32)
+        x = x - np.min(x)
+        x = np.clip(x, 0.0, self.max_val)
+        y = np.log1p(x / self.scale) / self.denom
+        y = self.out_min + y * (self.out_max - self.out_min)
+        return np.clip(y, self.out_min, self.out_max).astype(
+            np.float32, copy=False
+        )
+
+    def __call__(self, data_dict):
+        for k in self.keys:
+            if k in data_dict.keys():
+                data_dict[k] = self.relative_log_transform(data_dict[k])
             else:
                 raise ValueError(f"Key {k} not found in data_dict")
         return data_dict
@@ -1138,6 +1192,7 @@ class GridSample(object):
         return_displacement=False,
         project_displacement=False,
         sum_keys=None,
+        min_keys=None,
     ):
         self.grid_size = grid_size
         self.hash = self.fnv_hash_vec if hash_type == "fnv" else self.ravel_hash_vec
@@ -1149,6 +1204,7 @@ class GridSample(object):
         self.return_displacement = return_displacement
         self.project_displacement = project_displacement
         self.sum_keys = sum_keys or []
+        self.min_keys = min_keys or []
 
     def __call__(self, data_dict):
         assert "coord" in data_dict.keys()
@@ -1176,8 +1232,8 @@ class GridSample(object):
                 mask = np.zeros_like(data_dict["segment"]).astype(bool)
                 mask[data_dict["sampled_index"]] = True
                 data_dict["sampled_index"] = np.where(mask[idx_unique])[0]
-            summed = {}
-            if self.sum_keys:
+            reduced = {}
+            if self.sum_keys or self.min_keys:
                 voxel_of_point = np.empty(len(key), dtype=inverse.dtype)
                 voxel_of_point[idx_sort] = inverse
                 num_voxels = len(count)
@@ -1186,9 +1242,19 @@ class GridSample(object):
                         vals = data_dict[sk]
                         agg = np.zeros((num_voxels,) + vals.shape[1:], dtype=vals.dtype)
                         np.add.at(agg, voxel_of_point, vals)
-                        summed[sk] = agg
+                        reduced[sk] = agg
+                for mk in self.min_keys:
+                    if mk in data_dict:
+                        vals = data_dict[mk]
+                        if np.issubdtype(vals.dtype, np.floating):
+                            fill = np.inf
+                        else:
+                            fill = np.iinfo(vals.dtype).max
+                        agg = np.full((num_voxels,) + vals.shape[1:], fill, dtype=vals.dtype)
+                        np.minimum.at(agg, voxel_of_point, vals)
+                        reduced[mk] = agg
             data_dict = index_operator(data_dict, idx_unique)
-            for sk, agg in summed.items():
+            for sk, agg in reduced.items():
                 data_dict[sk] = agg
             if self.return_inverse:
                 data_dict["inverse"] = np.zeros_like(inverse)
@@ -1463,7 +1529,13 @@ class MultiViewGenerator(object):
     def get_view(self, point, center, scale, size_override: Optional[int] = None):
         coord = point["coord"]
         max_size = min(self.max_size, coord.shape[0])
-        size = int(np.random.uniform(*scale) * max_size) if size_override is None else int(size_override)
+        if max_size <= 0:
+            raise ValueError("Cannot generate a view from an empty point cloud")
+        if size_override is None:
+            size = int(np.random.uniform(*scale) * max_size)
+        else:
+            size = int(size_override)
+        size = max(1, min(max_size, size))
         index = np.argsort(np.sum(np.square(coord - center), axis=-1))[:size]
         view = dict(index=index)
         for key in point.keys():

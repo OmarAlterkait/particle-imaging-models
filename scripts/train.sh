@@ -236,8 +236,7 @@ else
   fi
 
   export PYTHONPATH=./$CODE_DIR
-  echo "[pimm] Running from snapshot: $CODE_DIR"
-  echo "[pimm] NOTE: Edits to repo source won't affect this run. Use -C for dev mode."
+  echo "Running from repo snapshot: $CODE_DIR"
 fi
 
 echo "Loading config in:" $CONFIG_DIR

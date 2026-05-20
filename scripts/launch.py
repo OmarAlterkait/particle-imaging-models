@@ -378,6 +378,37 @@ def load_config(args: argparse.Namespace) -> dict[str, Any]:
     return cfg
 
 
+def require_path(cfg: dict[str, Any], dotted_path: str) -> Any:
+    cur: Any = cfg
+    for part in dotted_path.split("."):
+        if not isinstance(cur, dict) or part not in cur:
+            raise SystemExit(f"Missing required launch setting: {dotted_path}")
+        cur = cur[part]
+    if cur is None or cur == "":
+        raise SystemExit(f"Missing required launch setting: {dotted_path}")
+    return cur
+
+
+def validate_launch_config(cfg: dict[str, Any]) -> None:
+    required = [
+        "paths.repo_root",
+        "paths.exp_root",
+        "resources.nodes",
+        "resources.gpus_per_node",
+        "resources.tasks_per_node",
+        "resources.cpus_per_task",
+        "resources.time",
+        "slurm.gpu_directive",
+        "container.runtime",
+    ]
+    for dotted_path in required:
+        require_path(cfg, dotted_path)
+
+    runtime = cfg.get("container", {}).get("runtime")
+    if runtime in {"singularity", "shifter"}:
+        require_path(cfg, "container.image")
+
+
 def validate_local_config(cfg: dict[str, Any]) -> None:
     train_cfg = cfg.get("train", {})
     config_dir = train_cfg.get("config_dir")
@@ -392,10 +423,9 @@ def validate_local_config(cfg: dict[str, Any]) -> None:
 def submit(script: str, cfg: dict[str, Any]) -> None:
     repo_root = Path(str(cfg.get("paths", {}).get("repo_root", ROOT)))
     submit_cfg = cfg.get("submit") or {}
-    submit_cwd_value = str(submit_cfg.get("cwd") or repo_root)
 
     if submit_cfg.get("host"):
-        remote_parts = [f"cd {shlex.quote(submit_cwd_value)}"]
+        remote_parts = [f"cd {shlex.quote(str(repo_root))}"]
         remote_parts.extend(str(cmd) for cmd in submit_cfg.get("setup") or [])
         remote_parts.append("mkdir -p slurm_logs")
         remote_parts.append("sbatch")
@@ -409,9 +439,7 @@ def submit(script: str, cfg: dict[str, Any]) -> None:
         )
         return
 
-    submit_cwd = Path(submit_cwd_value)
-    if not submit_cwd.exists():
-        submit_cwd = repo_root if repo_root.exists() else ROOT
+    submit_cwd = repo_root if repo_root.exists() else ROOT
     (submit_cwd / "slurm_logs").mkdir(parents=True, exist_ok=True)
 
     with tempfile.NamedTemporaryFile(
@@ -476,6 +504,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv or sys.argv[1:])
     timestamp = dt.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     cfg = resolve_all(load_config(args), timestamp)
+    validate_launch_config(cfg)
     validate_local_config(cfg)
 
     run_name = build_run_name(cfg, timestamp)

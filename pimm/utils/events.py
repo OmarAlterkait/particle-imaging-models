@@ -735,6 +735,7 @@ class WandbSummaryWriter:
         max_queue=10,
         flush_secs=120,
         filename_suffix="",
+        step_offset=0,
         **kwargs
     ):
         """
@@ -747,9 +748,13 @@ class WandbSummaryWriter:
             max_queue: Compatibility parameter, not used
             flush_secs: Compatibility parameter, not used
             filename_suffix: Compatibility parameter, not used
+            step_offset: Value added to every logged step. This only affects
+                logging; trainer state, schedules, checkpoints, and eval cadence
+                remain local to the current run.
             **kwargs: Additional arguments passed to wandb.init
         """
         self.run = None
+        self.step_offset = int(step_offset or 0)
         if not wandb.run:
             if log_dir:
                 kwargs.setdefault('dir', log_dir)
@@ -762,6 +767,10 @@ class WandbSummaryWriter:
             self.run = wandb.run
             
         self.step = 0
+
+    def _log_step(self, global_step=None):
+        step = self.step if global_step is None else global_step
+        return int(step) + self.step_offset
     
     def add_scalar(
         self,
@@ -773,7 +782,7 @@ class WandbSummaryWriter:
         double_precision=False,
     ):
         """Log a scalar value."""
-        step = global_step if global_step is not None else self.step
+        step = self._log_step(global_step)
         wandb.log({tag: scalar_value}, step=step)
         if global_step is None:
             self.step += 1
@@ -786,7 +795,7 @@ class WandbSummaryWriter:
         walltime=None
     ):
         """Log multiple scalars at once."""
-        step = global_step if global_step is not None else self.step
+        step = self._log_step(global_step)
         log_dict = {f"{main_tag}/{tag}": value 
                    for tag, value in tag_scalar_dict.items()}
         wandb.log(log_dict, step=step)
@@ -803,7 +812,7 @@ class WandbSummaryWriter:
         max_bins=None,
     ):
         """Log a histogram."""
-        step = global_step if global_step is not None else self.step
+        step = self._log_step(global_step)
         
         if isinstance(values, torch.Tensor):
             values = values.detach().cpu().numpy()
@@ -821,7 +830,7 @@ class WandbSummaryWriter:
         dataformats="CHW"
     ):
         """Log an image."""
-        step = global_step if global_step is not None else self.step
+        step = self._log_step(global_step)
         
         if isinstance(img_tensor, torch.Tensor):
             img_tensor = img_tensor.detach().cpu().numpy()
@@ -839,7 +848,7 @@ class WandbSummaryWriter:
         dataformats="NCHW"
     ):
         """Log multiple images."""
-        step = global_step if global_step is not None else self.step
+        step = self._log_step(global_step)
         
         if isinstance(img_tensor, torch.Tensor):
             img_tensor = img_tensor.detach().cpu().numpy()
@@ -863,7 +872,7 @@ class WandbSummaryWriter:
         walltime=None,
     ):
         """Log a matplotlib figure."""
-        step = global_step if global_step is not None else self.step
+        step = self._log_step(global_step)
         
         wandb.log({tag: wandb.Image(figure)}, step=step)
         
@@ -881,7 +890,7 @@ class WandbSummaryWriter:
         walltime=None
     ):
         """Log text."""
-        step = global_step if global_step is not None else self.step
+        step = self._log_step(global_step)
         
         wandb.log({tag: wandb.Html(f"<pre>{text_string}</pre>")}, step=step)
         
@@ -897,7 +906,7 @@ class WandbSummaryWriter:
         walltime=None
     ):
         """Log a video."""
-        step = global_step if global_step is not None else self.step
+        step = self._log_step(global_step)
         
         if isinstance(vid_tensor, torch.Tensor):
             vid_tensor = vid_tensor.detach().cpu().numpy()
@@ -918,7 +927,7 @@ class WandbSummaryWriter:
         metadata_header=None,
     ):
         """Log embeddings - use wandb.plot.scatter for this functionality"""
-        step = global_step if global_step is not None else self.step
+        step = self._log_step(global_step)
         
         if isinstance(mat, torch.Tensor):
             mat = mat.detach().cpu().numpy()
@@ -980,7 +989,7 @@ class WandbSummaryWriter:
             self.run.config[key] = value
             
         # Log metrics
-        step = global_step if global_step is not None else self.step
+        step = self._log_step(global_step)
         wandb.log(metric_dict, step=step)
         
         if global_step is None:

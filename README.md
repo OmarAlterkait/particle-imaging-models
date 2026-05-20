@@ -134,7 +134,7 @@ scripts/launch.py dry-run --site s3df launch/runs/e050_tail.yaml
 
 `--site s3df` submits through `ssh iana`, activates the
 `pointcept-torch2.5.0-cu12.4` mamba environment, and runs `sbatch` from the
-shared S3DF repo path. `--site nersc` currently assumes the launcher is run on a
+configured `paths.repo_root`. `--site nersc` currently assumes the launcher is run on a
 NERSC login node and renders a Shifter/Perlmutter job. See
 `launch/README.md` for the YAML layer details and override syntax.
 
