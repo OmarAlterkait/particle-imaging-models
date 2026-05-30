@@ -4,8 +4,9 @@ import torch
 import torch.utils.data
 
 import pimm.utils.comm as comm
-from pimm.datasets.utils import point_collate_fn
-from pimm.datasets import ConcatDataset
+# point_collate_fn / ConcatDataset come from pimm-data via the shim
+# (pimm/datasets/__init__.py) — both are bound before it imports this module.
+from pimm.datasets import point_collate_fn, ConcatDataset
 from pimm.utils.env import set_seed
 
 
