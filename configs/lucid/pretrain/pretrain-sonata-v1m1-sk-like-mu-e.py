@@ -5,7 +5,8 @@ Uses config_000001 (mu-) and config_000003 (e-) with a deterministic per-config
 holdout for event-level linear probing.
 """
 
-__import__("pimm.datasets.lucid_event_ssl")
+# LUCiDEventSSLDataset dissolved into MultiModalEventDataset (registered by the
+# pimm.datasets shim); the event-level linear-probe hook still lives in pimm.
 __import__("pimm.engines.hooks.lucid_event_probe")
 
 _base_ = ["../../_base_/default_runtime.py"]
@@ -147,6 +148,10 @@ scheduler = dict(
 )
 
 base_event_transform = [
+    # Aggregate the nested `sensor` stream (multiple hits/PMT) into one point
+    # per PMT and lift to flat coord/energy/time — replaces the inline
+    # aggregation the dissolved LUCiDEventSSLDataset did.
+    dict(type="AggregateSensorHits", stream="sensor", time_aggregation="earliest"),
     dict(type="NormalizeCoord", center=coord_center, scale=coord_scale),
     dict(
         type="Update",
@@ -262,37 +267,45 @@ val_transform = base_event_transform + [
     ),
 ]
 
+# Dissolved LUCiDEventSSLDataset -> MultiModalEventDataset composing a per-config
+# LUCiDDataset(sensor) source. The deterministic per-config holdout (n_per_config
+# = the old holdout_events_per_config) and the min_points filter are now base
+# features; sensor-hit aggregation moved to the AggregateSensorHits transform
+# (prepended to base_event_transform). "holdout" split -> "val".
+_source_dataset = dict(
+    type="LUCiDDataset",
+    modalities=("sensor",),
+    dataset_name="wc",
+)
+_sources = [
+    dict(name=c["name"], label=c["label"], config_id=i)
+    for i, c in enumerate(lucid_configs)
+]
+_holdout = dict(seed=seed, n_per_config=holdout_events_per_config)
+
 data = dict(
     num_classes=2,
     names=["mu-", "e-"],
     ignore_index=-1,
     train=dict(
-        type="LUCiDEventSSLDataset",
+        type="MultiModalEventDataset",
+        source_dataset=_source_dataset,
+        sources=_sources,
         data_root=data_root,
-        configs=lucid_configs,
         split="train",
-        dataset_name="wc",
-        holdout_events_per_config=holdout_events_per_config,
-        holdout_seed=seed,
-        holdout_strategy="random",
+        holdout=_holdout,
         min_points=min_points,
-        aggregate_sensor_hits=True,
-        time_aggregation="earliest",
         transform=transform,
         loop=1,
     ),
     val=dict(
-        type="LUCiDEventSSLDataset",
+        type="MultiModalEventDataset",
+        source_dataset=_source_dataset,
+        sources=_sources,
         data_root=data_root,
-        configs=lucid_configs,
-        split="holdout",
-        dataset_name="wc",
-        holdout_events_per_config=holdout_events_per_config,
-        holdout_seed=seed,
-        holdout_strategy="random",
+        split="val",
+        holdout=_holdout,
         min_points=min_points,
-        aggregate_sensor_hits=True,
-        time_aggregation="earliest",
         transform=val_transform,
         loop=1,
     ),
