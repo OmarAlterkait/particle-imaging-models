@@ -226,6 +226,11 @@ else
   echo " =========> CREATE EXP DIR <========="
   echo "Experiment dir: $ROOT_DIR/$EXP_DIR"
   cp -r scripts tools pimm "$CODE_DIR" 2>/dev/null
+  # de-fork: snapshot the pimm-data submodule + pin its SHA so the run records
+  # the exact data-layer revision (closes the editable-but-uncopied repro hole).
+  mkdir -p "$CODE_DIR/libs" 2>/dev/null
+  cp -r libs/pimm-data "$CODE_DIR/libs/pimm-data" 2>/dev/null
+  git -C libs/pimm-data rev-parse HEAD > "$EXP_DIR/pimm_data_sha.txt" 2>/dev/null
 
   # Ensure physical checkpoint dir exists
   mkdir -p "$MODEL_SAVE_DIR"

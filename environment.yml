@@ -54,3 +54,4 @@ dependencies:
     - ./libs/pointgroup_ops
     - ./libs/cnms
     - ./libs/pytorch3d_ops
+    - -e ./libs/pimm-data  # de-fork: the data layer, pinned via the submodule SHA
