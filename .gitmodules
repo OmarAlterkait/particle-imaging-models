@@ -1,4 +1,5 @@
 [submodule "libs/pimm-data"]
 	path = libs/pimm-data
 	url = git@github.com:OmarAlterkait/pimm-data.git
-	branch = defork-step1
+	# Pinned by the recorded gitlink SHA only — no `branch =` line, so a
+	# `git submodule update --remote` cannot silently drift off the pinned commit.

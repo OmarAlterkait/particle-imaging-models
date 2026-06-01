@@ -226,11 +226,13 @@ else
   echo " =========> CREATE EXP DIR <========="
   echo "Experiment dir: $ROOT_DIR/$EXP_DIR"
   cp -r scripts tools pimm "$CODE_DIR" 2>/dev/null
-  # de-fork: snapshot the pimm-data submodule + pin its SHA so the run records
-  # the exact data-layer revision (closes the editable-but-uncopied repro hole).
-  mkdir -p "$CODE_DIR/libs" 2>/dev/null
-  cp -r libs/pimm-data "$CODE_DIR/libs/pimm-data" 2>/dev/null
-  git -C libs/pimm-data rev-parse HEAD > "$EXP_DIR/pimm_data_sha.txt" 2>/dev/null
+  # de-fork: record the pimm-data revision that will actually be imported. The
+  # editable install resolves pimm_data from its own tree (not this snapshot), so
+  # record THAT path/SHA — and tools/train.py logs `pimm_data.__file__` at startup,
+  # the authoritative record of what the run used.
+  python3 -c "import pimm_data,os,subprocess as s; d=os.path.dirname(os.path.dirname(pimm_data.__file__)); \
+print(pimm_data.__file__); print(s.run(['git','-C',d,'rev-parse','HEAD'],capture_output=True,text=True).stdout.strip())" \
+    > "$EXP_DIR/pimm_data_sha.txt" 2>/dev/null
 
   # Ensure physical checkpoint dir exists
   mkdir -p "$MODEL_SAVE_DIR"

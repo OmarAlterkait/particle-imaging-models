@@ -14,6 +14,18 @@ import logging
 import torch.multiprocessing as mp
 mp.set_start_method("spawn", force=True)
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+# De-fork guard: the data layer lives in pimm-data (libs/pimm-data submodule).
+# A stale editable install silently resolving to a different/older pimm-data
+# tree is the failure mode that bit us before — record which tree resolved, and
+# fail loudly (with a clear hint) if it is missing the de-fork dataset.
+import pimm_data  # noqa: E402
+print(f"[pimm] data layer: pimm_data @ {pimm_data.__file__}", flush=True)
+assert hasattr(pimm_data, "MultiModalEventDataset"), (
+    f"pimm_data resolved to {pimm_data.__file__} but lacks MultiModalEventDataset "
+    "— wrong/old pimm-data on the path (expected the libs/pimm-data submodule). "
+    "Check `pip show pimm-data` / PYTHONPATH.")
+
 from pimm.engines.defaults import (
     default_argument_parser,
     default_config_parser,
