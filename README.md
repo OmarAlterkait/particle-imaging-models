@@ -223,6 +223,31 @@ Data saves to `~/.cache/pimm/pilarnet/v2` if `output_dir` is not provided. After
 
 PILArNet has two revisions. **v2** is recommended for new models (adds PID, momentum, and vertex information). **v1** is the original dataset from the PoLAr-MAE paper. Events differ between splits, so models trained on v1 should be evaluated on v1.
 
+### Detector datasets (pimm-data)
+
+The detector dataset loaders — `JAXTPCDataset` (LArTPC), `LUCiDDataset` (water
+Cherenkov), `MultiModalEventDataset` (source-mixture / holdout wrapper), and
+`PILArNetH5Dataset` — live in the standalone **[pimm-data](https://github.com/OmarAlterkait/pimm-data)**
+package, vendored here as the `libs/pimm-data` git submodule:
+
+```bash
+git submodule update --init libs/pimm-data
+pip install -e libs/pimm-data
+```
+
+`pimm/datasets/__init__.py` is a thin re-export shim: it registers everything
+from `pimm_data` into pimm's `DATASETS`/`TRANSFORMS` registries, so configs keep
+referencing `type="JAXTPCDataset"` etc. unchanged. `tools/train.py` logs the
+resolved `pimm_data.__file__` at startup and asserts the de-fork dataset is
+present, so a stale editable install fails loudly instead of silently loading an
+old tree.
+
+The full modality schema (`edep`/`sensor`/`hits`/`labl`), nested-dict output,
+transform pipeline (`ApplyToStream` → `Collect`), and per-dataset API are
+documented in **[`libs/pimm-data/README.md`](libs/pimm-data/README.md)**; see
+[`docs/DETECTOR_DATASET.md`](docs/DETECTOR_DATASET.md) for pimm-side config
+recipes.
+
 ## Data Format
 
 Point cloud data should be organized with the following structure:
