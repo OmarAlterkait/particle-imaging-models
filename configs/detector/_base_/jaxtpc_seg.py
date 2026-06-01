@@ -40,7 +40,8 @@ transform = [
         dict(type="RandomRotate", angle=[-1, 1], axis="y", center=[0, 0, 0], p=0.8),
         dict(type="RandomFlip", p=0.5),
     ]),
-    dict(type="ToTensor"),
+    # No standalone ToTensor: Collect already tensorizes the keys it extracts,
+    # and a global ToTensor here would also tensorize the discarded `labl` stream.
     dict(
         type="Collect",
         stream="edep",
@@ -62,7 +63,8 @@ test_transform = [
             return_grid_coord=True,
         ),
     ]),
-    dict(type="ToTensor"),
+    # No standalone ToTensor: Collect already tensorizes the keys it extracts,
+    # and a global ToTensor here would also tensorize the discarded `labl` stream.
     dict(
         type="Collect",
         stream="edep",

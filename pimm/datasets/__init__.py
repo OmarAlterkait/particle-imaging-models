@@ -17,24 +17,11 @@ from pimm_data import (
     DefaultDataset, ConcatDataset,
     PILArNetH5Dataset, JAXTPCDataset, LUCiDDataset,
     MultiModalEventDataset,
-    compute_anchors, ANCHOR_DEFAULT_CFG,
 )
 from pimm_data.collate import collate_fn, point_collate_fn, inseg_collate_fn
 
-
-# DISSOLVED LUCiDEventSSLDataset: the SSL config's type="LUCiDEventSSLDataset"
-# resolves to the MultiModalEventDataset successor (the base + the LUCiD-SSL
-# config now own the holdout / min-points / aggregation it did inline). The old
-# pimm __init__ never imported lucid_event_ssl — registration was a config-side
-# side-effect — so making it explicit here also fixes that latent gap.
-# Membership-guarded so a re-import (or a vendored-file revert) never raises
-# "already registered".
-def _reregister(registry, name, cls):
-    if registry.get(name) is None:
-        registry.register_module(name=name, module=cls)
-
-
-_reregister(DATASETS, "LUCiDEventSSLDataset", MultiModalEventDataset)
+# The SSL config's type="LUCiDEventSSLDataset" was migrated to
+# type="MultiModalEventDataset" directly, so no alias re-registration is needed.
 
 # KEEP-IN-PIMM: the DDP dataloader (imports pimm.utils.comm / env).
 from .dataloader import MultiDatasetDataloader
@@ -46,5 +33,4 @@ __all__ = [
     "PILArNetH5Dataset", "JAXTPCDataset", "LUCiDDataset",
     "MultiModalEventDataset",
     "MultiDatasetDataloader",
-    "compute_anchors", "ANCHOR_DEFAULT_CFG",
 ]
