@@ -242,7 +242,7 @@ resolved `pimm_data.__file__` at startup and asserts the de-fork dataset is
 present, so a stale editable install fails loudly instead of silently loading an
 old tree.
 
-The full modality schema (`edep`/`sensor`/`hits`/`labl`), nested-dict output,
+The full modality schema (`step`/`sensor`/`hits`/`labl`), nested-dict output,
 transform pipeline (`ApplyToStream` → `Collect`), and per-dataset API are
 documented in **[`libs/pimm-data/README.md`](libs/pimm-data/README.md)**; see
 [`docs/DETECTOR_DATASET.md`](docs/DETECTOR_DATASET.md) for pimm-side config
