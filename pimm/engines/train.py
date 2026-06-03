@@ -399,23 +399,6 @@ class Trainer(TrainerBase):
         return scaler
 
 
-@TRAINERS.register_module("MultiDatasetTrainer")
-class MultiDatasetTrainer(Trainer):
-    def build_train_loader(self):
-        from pointcept.datasets import MultiDatasetDataloader
-
-        train_data = build_dataset(self.cfg.data.train)
-        train_loader = MultiDatasetDataloader(
-            train_data,
-            self.cfg.batch_size_per_gpu,
-            self.cfg.num_worker_per_gpu,
-            self.cfg.mix_prob,
-            self.cfg.seed,
-        )
-        self.comm_info["iter_per_epoch"] = len(train_loader)
-        return train_loader
-
-
 @TRAINERS.register_module("InsegTrainer")
 class InsegTrainer(Trainer):
     """Trainer for instance segmentation that handles multiple queries per sample."""

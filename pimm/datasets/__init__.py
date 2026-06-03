@@ -1,8 +1,8 @@
 # pimm/datasets/__init__.py — de-fork re-export / re-register shim.
 #
 # The data layer now lives in pimm-data (installed editable as the
-# `libs/pimm-data` submodule). pimm keeps only: MultiDatasetDataloader (DDP),
-# the model/hook/loss registries, hooks/evaluators, and this shim.
+# `libs/pimm-data` submodule). pimm keeps the model/hook/loss registries,
+# hooks/evaluators, its SSL transforms, and this shim.
 #
 # Config `type=` strings resolve through pimm-data's DATASETS / TRANSFORMS,
 # re-exported here as `pimm.datasets.DATASETS` / `pimm.datasets.TRANSFORMS`.
@@ -14,7 +14,6 @@
 
 from pimm_data import (
     DATASETS, TRANSFORMS, Compose, build_dataset,
-    DefaultDataset, ConcatDataset,
     PILArNetH5Dataset, JAXTPCDataset, LUCiDDataset,
     MultiModalEventDataset,
 )
@@ -29,14 +28,9 @@ from . import transforms as _pimm_transforms  # noqa: F401
 # The SSL config's type="LUCiDEventSSLDataset" was migrated to
 # type="MultiModalEventDataset" directly, so no alias re-registration is needed.
 
-# KEEP-IN-PIMM: the DDP dataloader (imports pimm.utils.comm / env).
-from .dataloader import MultiDatasetDataloader
-
 __all__ = [
     "DATASETS", "TRANSFORMS", "Compose", "build_dataset",
     "collate_fn", "point_collate_fn", "inseg_collate_fn",
-    "DefaultDataset", "ConcatDataset",
     "PILArNetH5Dataset", "JAXTPCDataset", "LUCiDDataset",
     "MultiModalEventDataset",
-    "MultiDatasetDataloader",
 ]

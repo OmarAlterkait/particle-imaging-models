@@ -16,8 +16,7 @@ def test_shim_reexports_resolve():
     import pimm.datasets as d
     for name in ("DATASETS", "TRANSFORMS", "build_dataset", "collate_fn",
                  "point_collate_fn", "JAXTPCDataset", "LUCiDDataset",
-                 "PILArNetH5Dataset", "MultiModalEventDataset",
-                 "MultiDatasetDataloader"):
+                 "PILArNetH5Dataset", "MultiModalEventDataset"):
         assert getattr(d, name, None) is not None, f"shim missing {name}"
 
 
