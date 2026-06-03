@@ -6,11 +6,11 @@
 #
 # Config `type=` strings resolve through pimm-data's DATASETS / TRANSFORMS,
 # re-exported here as `pimm.datasets.DATASETS` / `pimm.datasets.TRANSFORMS`.
-# Those registries are a strict SUPERSET of the old vendored ones — pimm-data's
-# transforms ⊇ pimm's (it adds ApplyToStream + RemapSegment), and the datasets
-# match except the dissolved LUCiDEventSSLDataset (→ MultiModalEventDataset).
-# Importing pimm_data registers every dataset/transform via import side-effects,
-# so no manual re-registration is needed except the dissolved-SSL alias below.
+# pimm-data owns the generic/IO transforms; the pretraining-recipe transforms
+# (multi-view, MAE masking, anchors, instance targets) live in pimm and register
+# INTO the shared pimm_data.TRANSFORMS via the eager `transforms` import below.
+# Importing pimm_data registers every data-layer dataset/transform via import
+# side-effects; the eager import then layers pimm's SSL transforms on top.
 
 from pimm_data import (
     DATASETS, TRANSFORMS, Compose, build_dataset,
@@ -19,6 +19,12 @@ from pimm_data import (
     MultiModalEventDataset,
 )
 from pimm_data.collate import collate_fn, point_collate_fn, inseg_collate_fn
+
+# Register pimm-owned SSL/pretraining transforms into the shared
+# pimm_data.TRANSFORMS. Eager (not lazy) so any config referencing e.g.
+# type="MultiViewGenerator" resolves before the first Compose build. Must come
+# after the `from pimm_data import ... TRANSFORMS` above (registry must exist).
+from . import transforms as _pimm_transforms  # noqa: F401
 
 # The SSL config's type="LUCiDEventSSLDataset" was migrated to
 # type="MultiModalEventDataset" directly, so no alias re-registration is needed.
