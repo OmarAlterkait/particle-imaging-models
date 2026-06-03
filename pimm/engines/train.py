@@ -159,7 +159,47 @@ class Trainer(TrainerBase):
             h.modify_config(self.cfg)
         self.logger.info("=> Building writer ...")
         self.writer = self.build_writer()
-        
+
+    def before_train(self):
+        # base: matmul precision + hooks (checkpoint hook sets start_epoch/iter)
+        super().before_train()
+        # build the post-collate dense GPU stage list (empty for sparse configs)
+        self.gpu_transforms = self._build_gpu_transforms()
+
+    def _plane_geometry(self):
+        """Find a dataset plane-geometry registry for the dense GPU stages."""
+        ds = getattr(self.train_loader, "dataset", None)
+        for cand in [ds] + list(getattr(ds, "datasets", []) or []):
+            fn = getattr(cand, "plane_geometry", None)
+            if callable(fn):
+                geom = fn()
+                if geom:
+                    return geom
+        return {}
+
+    def _build_gpu_transforms(self):
+        """Build the post-collate dense stages from cfg.gpu_transforms (policy only:
+        coherent/incoherent/n_bits/...). Empty for sparse configs -> run_step uses
+        the plain .cuda() transfer. Geometry is sourced from the dataset registry."""
+        gcfg = getattr(self.cfg, "gpu_transforms", None)
+        if not gcfg:
+            return []
+        try:
+            from pimm_data import build_sensor_gpu_stages
+        except Exception as e:
+            self.logger.warning(
+                f"gpu_transforms set but pimm_data lacks the GPU runner ({e}); "
+                "skipping the dense path.")
+            return []
+        geom = self._plane_geometry()
+        if not geom:
+            self.logger.warning(
+                "gpu_transforms set but no dataset.plane_geometry(); skipping.")
+            return []
+        stages = build_sensor_gpu_stages(geom, **dict(gcfg))
+        self.logger.info(
+            f"=> GPU batch transforms: {len(stages)} stage(s) over {len(geom)} plane(s).")
+        return stages
 
     def train(self):
         anomaly_context = torch.autograd.detect_anomaly() if self.cfg.detect_anomaly else contextlib.nullcontext()
@@ -223,18 +263,35 @@ class Trainer(TrainerBase):
             auto_cast = torch.cuda.amp.autocast
 
         input_dict = self.comm_info["input_dict"]
-        for key in input_dict.keys():
-            if isinstance(input_dict[key], torch.Tensor):
-                input_dict[key] = input_dict[key].cuda(non_blocking=True)
+        stages = getattr(self, "gpu_transforms", None)
+        if stages:
+            # dense path: move sparse batch to device + run densify/noise/digitize
+            # on-device (born-on-GPU). Noise is train-only; seed folds in rank/epoch.
+            from pimm_data import apply_batch_transforms
+            input_dict = apply_batch_transforms(
+                input_dict, stages, device="cuda",
+                base_seed=getattr(self.cfg, "seed", 0) or 0,
+                epoch=self.epoch, rank=comm.get_rank())
+            self.comm_info["input_dict"] = input_dict
+        else:
+            # sparse default path — unchanged
+            for key in input_dict.keys():
+                if isinstance(input_dict[key], torch.Tensor):
+                    input_dict[key] = input_dict[key].cuda(non_blocking=True)
 
         with auto_cast(
             enabled=self.cfg.enable_amp, dtype=AMP_DTYPE[self.cfg.amp_dtype]
         ):
             output_dict = self.model(input_dict)
             loss = output_dict["loss"]
-        # Log average points per sample for throughput analysis
+        # Log average points per sample for throughput analysis. The dense path
+        # has 'offset' but no top-level 'coord' (sensor is sparse wire/time/value),
+        # so fall back to the sparse hit count and guard the key explicitly.
         if "offset" in input_dict:
-            output_dict["avg_pts"] = input_dict["coord"].shape[0] / len(input_dict["offset"])
+            if "coord" in input_dict:
+                output_dict["avg_pts"] = input_dict["coord"].shape[0] / len(input_dict["offset"])
+            elif "wire" in input_dict:
+                output_dict["avg_pts"] = input_dict["wire"].shape[0] / len(input_dict["offset"])
         self.optimizer.zero_grad()
         if self.cfg.enable_amp:
             self.scaler.scale(loss).backward()
